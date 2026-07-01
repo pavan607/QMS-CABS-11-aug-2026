@@ -1,0 +1,29 @@
+# Vendor / CI: build and run from the repository root.
+# Customer delivery: use deploy/docker-compose.yml + pre-built image only.
+#
+# docker compose up --build -d
+# Uploads: ./data/uploads on the host (override UPLOADS_HOST_PATH in .env)
+
+services:
+  qms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qms:latest
+    container_name: qms
+    restart: unless-stopped
+    # Lets the container reach PostgreSQL running on the Docker host (not 127.0.0.1 inside the container).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${HTTP_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      # Auth.js v5 — avoid UntrustedHost when using localhost/LAN/reverse proxy
+      AUTH_TRUST_HOST: "true"
+      # Same DATABASE_URL as local (localhost) still works: rewritten to reach Postgres on the host
+      DOCKER_PG_HOST: host.docker.internal
+    volumes:
+      - ${UPLOADS_HOST_PATH:-./data/uploads}:/app/public/uploads

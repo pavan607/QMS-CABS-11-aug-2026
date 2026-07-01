@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QMS — Browser color check</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 1.25rem; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    .ok { color: #15803d; font-weight: bold; }
+    .fail { color: #b91c1c; font-weight: bold; }
+    .swatch { display: inline-block; width: 48px; height: 24px; border: 1px solid #333; vertical-align: middle; margin-right: 8px; }
+    .note { font-size: 0.9rem; color: #444; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <h1>QMS browser color compatibility</h1>
+  <p>Open this page on the PC where colors look wrong. Send a screenshot to your IT team.</p>
+  <table>
+    <thead>
+      <tr><th>Feature</th><th>Status</th></tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+  <p><strong>Sample colors</strong> (should be green, amber, red — not grey or black):</p>
+  <p>
+    <span class="swatch" style="background: rgb(220, 252, 231);"></span> Green tint
+    <span class="swatch" style="background: rgb(254, 243, 199);"></span> Amber tint
+    <span class="swatch" style="background: rgb(254, 226, 226);"></span> Red tint
+  </p>
+  <p class="note" id="ua"></p>
+  <script>
+    function row(name, pass) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + name + '</td><td class="' + (pass ? 'ok">OK' : 'fail">Not supported') + '</td>';
+      document.getElementById('results').appendChild(tr);
+    }
+    function supportsColor(value) {
+      return CSS.supports('color', value);
+    }
+    row('CSS variables (var)', supportsColor('color: var(--x, #000)'));
+    row('hsl() with alpha (/)', supportsColor('hsl(0 0% 50% / 0.5)'));
+    row('hsla() comma syntax', supportsColor('hsla(0, 0%, 50%, 0.5)'));
+    row('color-mix()', supportsColor('color-mix(in srgb, #000 50%, #fff)'));
+    row('oklch()', supportsColor('oklch(70% 0.15 250)'));
+    row('display-p3', supportsColor('color(display-p3 1 0 0)'));
+    document.getElementById('ua').textContent = 'User-Agent: ' + navigator.userAgent;
+  </script>
+</body>
+</html>

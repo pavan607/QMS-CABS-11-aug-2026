@@ -1,0 +1,387 @@
+Run this in postgresql
+
+CREATE TABLE IF NOT EXISTS inspection_type_groups (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  sort_order INTEGER DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active',
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inspection_type_groups_status ON inspection_type_groups(status);
+
+
+CREATE TABLE IF NOT EXISTS inspection_type_items (
+  id SERIAL PRIMARY KEY,
+  group_id INTEGER NOT NULL REFERENCES inspection_type_groups(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  code VARCHAR(100) NOT NULL,
+  description TEXT,
+  sort_order INTEGER DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active',
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(group_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inspection_type_items_group ON inspection_type_items(group_id);
+CREATE INDEX IF NOT EXISTS idx_inspection_type_items_code ON inspection_type_items(code);
+CREATE INDEX IF NOT EXISTS idx_inspection_type_items_status ON inspection_type_items(status);
+
+
+-- Step 1: Insert groups (section headings)
+INSERT INTO inspection_type_groups (name, sort_order) VALUES
+  ('Mechanical', 1),
+  ('Electrical & Electronics', 2),
+  ('Power/Signal Cable Harness', 3),
+  ('RF Cable Harness', 4),
+  ('Qualification Tests (QT) for Airborne LRUs', 5),
+  ('Qualification Tests (QT) for Ground LRUs', 6),
+  ('Acceptance Tests (AT)', 7),
+  ('PCB Screening Tests', 8),
+  ('Environmental Stress Screening (ESS) tests', 9),
+  ('Safety of Flight (SOFT) tests', 10),
+  ('EMI/EMC Tests', 11),
+  ('Power Supply Compatibility tests', 12),
+  ('First Article Inspection', 13),
+  ('System Level/Rig tests/ATE/GES/Others', 14),
+  ('A/c Ground Test/Others', 15);
+
+-- Step 2: Insert items per group
+-- MECHANICAL
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Raw material inspection', 'mech-raw-material', 1),
+  ('Verification of CoC/Test Reports of Raw material', 'mech-coc-raw-material', 2),
+  ('Verification of CoC/Test Reports of fasteners', 'mech-coc-fasteners', 3),
+  ('Kit Part inspection', 'mech-kit-part', 4),
+  ('Dimensional inspection', 'mech-dimensional', 5),
+  ('Verification of dimensional inspection report', 'mech-dim-report', 6),
+  ('Verification of Process Sheets/Route Cards/Job Cards', 'mech-process-sheets', 7),
+  ('Heat treatment inspection', 'mech-heat-treatment', 8),
+  ('Verification of Heat treatment report', 'mech-heat-report', 9),
+  ('NDT witness', 'mech-ndt-witness', 10),
+  ('Verification of NDT report', 'mech-ndt-report', 11),
+  ('Surface treatment inspection', 'mech-surface-treatment', 12),
+  ('Special process (Welding/Riveting/Cladding/Brazing etc.)', 'mech-special-process', 13),
+  ('Verification of Surface treatment report', 'mech-surface-report', 14),
+  ('Sub-Assembly Inspection', 'mech-sub-assembly', 15),
+  ('Final assembly inspection', 'mech-final-assembly', 16),
+  ('Pattern Inspection', 'mech-pattern', 17),
+  ('Mould inspection', 'mech-mould', 18),
+  ('Layup inspection', 'mech-layup', 19),
+  ('Curing inspection', 'mech-curing', 20),
+  ('Coupon fabrication inspection', 'mech-coupon-fabrication', 21),
+  ('Others (please specify)', 'mech-others', 22)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Mechanical'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- ELECTRICAL & ELECTRONICS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Verification of Process Sheets/Route Cards/Job Cards', 'ee-process-sheets', 1),
+  ('Kit Part inspection', 'ee-kit-part', 2),
+  ('Bare PCB inspection', 'ee-bare-pcb', 3),
+  ('Verification of CoC/Test Reports: PCB Reports, Datasheets etc.', 'ee-coc-pcb', 4),
+  ('Populated PCB inspection', 'ee-populated-pcb', 5),
+  ('PCB Screening Test', 'ee-pcb-screening', 6),
+  ('Conformal coating inspection', 'ee-conformal-coating', 7)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Electrical & Electronics'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- POWER/SIGNAL CABLE HARNESS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Verification of Process Sheets/Route Cards/Job Cards', 'psch-process-sheets', 1),
+  ('KoP Inspection', 'psch-kop', 2),
+  ('Visual Inspection', 'psch-visual', 3),
+  ('Dimensional & Weight Check', 'psch-dimensional-weight', 4),
+  ('Continuity Check', 'psch-continuity', 5),
+  ('Insulation Resistance', 'psch-insulation-resistance', 6),
+  ('Crimp-pull Test (Samples only)', 'psch-crimp-pull', 7),
+  ('Cable Harness Assembly Inspection', 'psch-assembly', 8),
+  ('Others (please specify)', 'psch-others', 9)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Power/Signal Cable Harness'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- RF CABLE HARNESS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Verification of Process Sheets/Route Cards/Job Cards', 'rfch-process-sheets', 1),
+  ('KoP Inspection', 'rfch-kop', 2),
+  ('Visual Inspection', 'rfch-visual', 3),
+  ('Dimensional & Weight Check', 'rfch-dimensional-weight', 4),
+  ('Braid Milling, Contact Solder Inspection', 'rfch-braid-milling', 5),
+  ('Crimp-pull Test (Samples only)', 'rfch-crimp-pull', 6),
+  ('Continuity Check', 'rfch-continuity', 7),
+  ('Cable harness inspection', 'rfch-harness', 8),
+  ('RF & Phase Matching Test', 'rfch-rf-phase', 9),
+  ('Others (please specify)', 'rfch-others', 10)
+) AS v(name, code, sort_order)
+WHERE g.name = 'RF Cable Harness'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- QUALIFICATION TESTS - AIRBORNE LRUs
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Initial Physical and Visual inspection', 'qt-air-initial-visual', 1),
+  ('Final Physical and Visual inspection', 'qt-air-final-visual', 2),
+  ('Initial performance/functional inspection', 'qt-air-initial-perf', 3),
+  ('Final visual & performance/functional inspection', 'qt-air-final-perf', 4),
+  ('Initial Bonding Resistance Test', 'qt-air-initial-bonding', 5),
+  ('Final Bonding Resistance Test', 'qt-air-final-bonding', 6),
+  ('Insulation Resistance Test', 'qt-air-insulation', 7),
+  ('ESS tests', 'qt-air-ess', 8),
+  ('Low Pressure (Altitude) test', 'qt-air-low-pressure', 9),
+  ('High Temperature storage cum operation test', 'qt-air-high-temp', 10),
+  ('Low Temperature storage cum operation test', 'qt-air-low-temp', 11),
+  ('Temperature Shock test', 'qt-air-temp-shock', 12),
+  ('Contamination by Fluids test', 'qt-air-contamination', 13),
+  ('Solar Radiation (Sunshine) test', 'qt-air-solar', 14),
+  ('Rain test', 'qt-air-rain', 15),
+  ('Humidity test', 'qt-air-humidity', 16),
+  ('Fungus test', 'qt-air-fungus', 17),
+  ('Salt Fog test', 'qt-air-salt-fog', 18),
+  ('Sand test', 'qt-air-sand', 19),
+  ('Dust test', 'qt-air-dust', 20),
+  ('Immersion test', 'qt-air-immersion', 21),
+  ('Acceleration test', 'qt-air-acceleration', 22),
+  ('Vibration test', 'qt-air-vibration', 23),
+  ('Acoustic Noise test', 'qt-air-acoustic', 24),
+  ('Shock test', 'qt-air-shock', 25),
+  ('Temperature, Humidity, Vibration, and Altitude (CTAH) test', 'qt-air-ctah', 26),
+  ('HALT/HASS test', 'qt-air-halt-hass', 27),
+  ('Transit Drop test', 'qt-air-transit-drop', 28),
+  ('Bench handling test', 'qt-air-bench-handling', 29),
+  ('Drip test', 'qt-air-drip', 30),
+  ('Rapid decompression test', 'qt-air-rapid-decomp', 31),
+  ('Bird Strike Test', 'qt-air-bird-strike', 32),
+  ('Lightning Test', 'qt-air-lightning', 33),
+  ('Ground Vibration Test', 'qt-air-ground-vib', 34),
+  ('Static Strength Test', 'qt-air-static-strength', 35),
+  ('Modal Analysis Test', 'qt-air-modal', 36),
+  ('EMI/EMC tests', 'qt-air-emi-emc', 37),
+  ('Power Supply Compatibility tests', 'qt-air-psc', 38),
+  ('Others (please specify)', 'qt-air-others', 39)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Qualification Tests (QT) for Airborne LRUs'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- QUALIFICATION TESTS - GROUND LRUs
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Initial Physical and Visual inspection', 'qt-gnd-initial-visual', 1),
+  ('Final Physical and Visual inspection', 'qt-gnd-final-visual', 2),
+  ('Initial performance/functional inspection', 'qt-gnd-initial-perf', 3),
+  ('Initial Bonding Resistance Test', 'qt-gnd-initial-bonding', 4),
+  ('Final Bonding Resistance Test', 'qt-gnd-final-bonding', 5),
+  ('Insulation Resistance Test', 'qt-gnd-insulation', 6),
+  ('ESS tests', 'qt-gnd-ess', 7),
+  ('Low Pressure (Altitude) test', 'qt-gnd-low-pressure', 8),
+  ('High Temperature storage cum operation test', 'qt-gnd-high-temp', 9),
+  ('Low Temperature storage cum operation test', 'qt-gnd-low-temp', 10),
+  ('Rapid Temperature Cycling Test', 'qt-gnd-rapid-temp', 11),
+  ('Solar Radiation test', 'qt-gnd-solar', 12),
+  ('Rain test', 'qt-gnd-rain', 13),
+  ('Damp Heat test', 'qt-gnd-damp-heat', 14),
+  ('Mould Growth test', 'qt-gnd-mould', 15),
+  ('Corrosion (Salt) test', 'qt-gnd-corrosion', 16),
+  ('Dust test', 'qt-gnd-dust', 17),
+  ('Immersion test', 'qt-gnd-immersion', 18),
+  ('Roadability test', 'qt-gnd-roadability', 19),
+  ('Vibration test', 'qt-gnd-vibration', 20),
+  ('Bump test', 'qt-gnd-bump', 21),
+  ('Shock test', 'qt-gnd-shock', 22),
+  ('Drop test', 'qt-gnd-drop', 23),
+  ('Toppling test', 'qt-gnd-toppling', 24),
+  ('Drip test', 'qt-gnd-drip', 25),
+  ('Wind Load Test', 'qt-gnd-wind-load', 26),
+  ('EMI/EMC tests', 'qt-gnd-emi-emc', 27),
+  ('Final visual & performance/functional inspection', 'qt-gnd-final-perf', 28),
+  ('Others (please specify)', 'qt-gnd-others', 29)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Qualification Tests (QT) for Ground LRUs'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- ACCEPTANCE TESTS (AT)
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Initial Physical and Visual inspection', 'at-initial-visual', 1),
+  ('Initial performance/functional inspection', 'at-initial-perf', 2),
+  ('Initial Bonding Resistance Test', 'at-initial-bonding', 3),
+  ('Insulation Resistance Test', 'at-insulation', 4),
+  ('ESS Test', 'at-ess', 5),
+  ('Final Visual & performance/functional inspection', 'at-final-perf', 6),
+  ('Final Bonding Resistance Test', 'at-final-bonding', 7),
+  ('System Integration Test', 'at-system-integration', 8),
+  ('Others (please specify)', 'at-others', 9)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Acceptance Tests (AT)'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- PCB SCREENING TESTS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('High Temperature Storage (Stabilisation Bake) Test', 'pcb-high-temp-storage', 1),
+  ('Thermal Shock Test', 'pcb-thermal-shock', 2),
+  ('Burn-In Test', 'pcb-burn-in', 3)
+) AS v(name, code, sort_order)
+WHERE g.name = 'PCB Screening Tests'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- ESS TESTS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Power Burn-in test', 'ess-power-burn-in', 1),
+  ('Random Vibration 1 test', 'ess-random-vib-1', 2),
+  ('Thermal Cycling test', 'ess-thermal-cycling', 3),
+  ('Random Vibration 2 test', 'ess-random-vib-2', 4),
+  ('Others (please specify)', 'ess-others', 5)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Environmental Stress Screening (ESS) tests'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- SAFETY OF FLIGHT (SOFT) TESTS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Initial Visual and Performance check', 'soft-initial-visual', 1),
+  ('EMI/EMC tests', 'soft-emi-emc', 2),
+  ('Power Supply Compatibility tests', 'soft-psc', 3),
+  ('ESS tests', 'soft-ess', 4),
+  ('CTAH Test', 'soft-ctah', 5),
+  ('High Temperature storage cum operation test', 'soft-high-temp', 6),
+  ('Low Temperature storage cum operation test', 'soft-low-temp', 7),
+  ('Humidity test', 'soft-humidity', 8),
+  ('Altitude test', 'soft-altitude', 9),
+  ('Shock test', 'soft-shock', 10),
+  ('Acceleration test', 'soft-acceleration', 11),
+  ('Shock test (crash safety) Test', 'soft-crash-safety', 12),
+  ('Rapid decompression test', 'soft-rapid-decomp', 13),
+  ('Final Visual and Performance check', 'soft-final-visual', 14),
+  ('Others (please specify)', 'soft-others', 15)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Safety of Flight (SOFT) tests'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- EMI/EMC TESTS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('CE 101: Conducted emissions, audio frequency currents, power leads test', 'emi-ce101', 1),
+  ('CE 102: Conducted emissions, radio frequency potential, power leads test', 'emi-ce102', 2),
+  ('CE106: Conducted emissions, antenna port test', 'emi-ce106', 3),
+  ('CS 101: Conducted susceptibility, power leads test', 'emi-cs101', 4),
+  ('CS 103: Conducted susceptibility, antenna port, intermodulation test', 'emi-cs103', 5),
+  ('CS 104: Conducted susceptibility, antenna port, rejection of undesired signals test', 'emi-cs104', 6),
+  ('CS 105: Conducted susceptibility, antenna port, cross modulation test', 'emi-cs105', 7),
+  ('CS 109: Conducted susceptibility, structure current test', 'emi-cs109', 8),
+  ('CS 114: Conducted susceptibility, bulk cable injection test', 'emi-cs114', 9),
+  ('CS 115: Conducted susceptibility, bulk cable injection, impulse excitation test', 'emi-cs115', 10),
+  ('CS 116: Conducted susceptibility, damped sinusoidal transients, cables and power leads test', 'emi-cs116', 11),
+  ('CS 117: Conducted susceptibility, lightning induced transients, cables and power leads test', 'emi-cs117', 12),
+  ('CS 118: Personnel borne electrostatic discharge test', 'emi-cs118', 13),
+  ('RE 101: Radiated emissions, magnetic field test', 'emi-re101', 14),
+  ('RE 102: Radiated emissions, electric field test', 'emi-re102', 15),
+  ('RE 103: Radiated emissions, antenna spurious and harmonic outputs test', 'emi-re103', 16),
+  ('RS 101: Radiated susceptibility, magnetic field test', 'emi-rs101', 17),
+  ('RS 103: Radiated susceptibility, electric field test', 'emi-rs103', 18),
+  ('RS 105: Radiated susceptibility, transient electromagnetic field test', 'emi-rs105', 19),
+  ('RTCA DO-160 Sec 22: Lightning Induced Transient Susceptibility', 'emi-rtca-sec22', 20),
+  ('RTCA DO-160 Sec 25: Electrostatic Discharge', 'emi-rtca-sec25', 21),
+  ('Others (please specify)', 'emi-others', 22)
+) AS v(name, code, sort_order)
+WHERE g.name = 'EMI/EMC Tests'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- POWER SUPPLY COMPATIBILITY TESTS
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('LDC 101: Load Measurements test', 'psc-ldc101', 1),
+  ('LDC 102: Steady State Limits for Voltage test', 'psc-ldc102', 2),
+  ('LDC 103: Voltage Distortion Spectrum test', 'psc-ldc103', 3),
+  ('LDC 104: Total Ripple test', 'psc-ldc104', 4),
+  ('LDC 105: Normal Voltage Transients test', 'psc-ldc105', 5),
+  ('LDC 201: Power Interrupt test', 'psc-ldc201', 6),
+  ('LDC 301: Steady State Limits for Voltage test', 'psc-ldc301', 7),
+  ('LDC 302: Abnormal Voltage Transients test', 'psc-ldc302', 8),
+  ('LDC 401: Steady State Limits for Voltage test', 'psc-ldc401', 9),
+  ('LDC 501: Starting Voltage Transients test', 'psc-ldc501', 10),
+  ('LDC 601: Power Failure test', 'psc-ldc601', 11),
+  ('LDC 602: Phase Reversal test', 'psc-ldc602', 12),
+  ('HDC 101: Load Measurements test', 'psc-hdc101', 13),
+  ('HDC 102: Steady State Limits for Voltage test', 'psc-hdc102', 14),
+  ('HDC 103: Voltage Distortion Spectrum test', 'psc-hdc103', 15),
+  ('HDC 104: Total Ripple test', 'psc-hdc104', 16),
+  ('HDC 105: Normal Voltage Transients test', 'psc-hdc105', 17),
+  ('HDC 201: Power Interrupt test', 'psc-hdc201', 18),
+  ('HDC 301: Abnormal Steady State Limits for Voltage test', 'psc-hdc301', 19),
+  ('HDC 302: Abnormal Voltage Transients (Overvoltage/Undervoltage) Test', 'psc-hdc302', 20),
+  ('HDC 401: Emergency Limits for Voltage test', 'psc-hdc401', 21),
+  ('HDC 501: Starting Voltage Transients test', 'psc-hdc501', 22),
+  ('HDC 601: Power Failure test', 'psc-hdc601', 23),
+  ('HDC 602: Polarity Reversal test', 'psc-hdc602', 24),
+  ('TAC101: Three Phase Load and Current Harmonic Measurements Test', 'psc-tac101', 25),
+  ('TAC102: Steady State Limits for Voltage (Including Unbalance) and Frequency Test', 'psc-tac102', 26),
+  ('TAC103: Voltage Phase Difference Test', 'psc-tac103', 27),
+  ('TAC104: Voltage Modulation Test', 'psc-tac104', 28),
+  ('TAC105: Frequency Modulation Test', 'psc-tac105', 29),
+  ('TAC106: Voltage Distortion Spectrum Test', 'psc-tac106', 30),
+  ('TAC107: Total Voltage Distortion Test', 'psc-tac107', 31),
+  ('TAC108: DC Voltage Component Test', 'psc-tac108', 32),
+  ('TAC109: Normal Voltage Transients Test', 'psc-tac109', 33),
+  ('TAC110: Normal Frequency Transients Test', 'psc-tac110', 34),
+  ('TAC 201: Power Interrupt test', 'psc-tac201', 35),
+  ('TAC 301: Abnormal Limits for Voltage and Frequency test', 'psc-tac301', 36),
+  ('TAC 302: Abnormal Voltage Transients (Overvoltage/Undervoltage) test', 'psc-tac302', 37),
+  ('TAC 303: Abnormal Frequency Transients (Overfrequency/Underfrequency) test', 'psc-tac303', 38),
+  ('TAC 401: Emergency Limits for Voltage and Frequency test', 'psc-tac401', 39),
+  ('TAC 601: Power Failure (Three Phase) test', 'psc-tac601', 40),
+  ('TAC 602: One Phase and Two Phase Power Failures test', 'psc-tac602', 41),
+  ('TAC 603: Phase Reversal test', 'psc-tac603', 42),
+  ('Others (please specify)', 'psc-others', 43)
+) AS v(name, code, sort_order)
+WHERE g.name = 'Power Supply Compatibility tests'
+ON CONFLICT (group_id, code) DO NOTHING;
+
+-- FIRST ARTICLE INSPECTION
+INSERT INTO inspection_type_items (group_id, name, code, sort_order)
+SELECT g.id, v.name, v.code, v.sort_order
+FROM inspection_type_groups g,
+(VALUES
+  ('Mechanical', 'fai-mechanical', 1),
+  ('Electrical & Electronics', 'fai-electrical', 2),
+  ('AT', 'fai-at', 3)
+) AS v(name, code, sort_order)
+WHERE g.name = 'First Article Inspection'
+ON CONFLICT (group_id, code) DO NOTHING;
+

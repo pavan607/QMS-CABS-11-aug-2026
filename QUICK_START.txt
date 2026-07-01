@@ -1,0 +1,130 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║           QUALITY MANAGEMENT SYSTEM - QUICK START                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+✅ DEPENDENCIES ALREADY INSTALLED!
+
+⚡ NEXT STEPS TO RUN YOUR QMS:
+
+1️⃣  CREATE POSTGRESQL DATABASE
+   ────────────────────────────────
+   Command:  createdb qms_db
+   
+   Or using psql:
+   - psql -U postgres
+   - CREATE DATABASE qms_db;
+   - \q
+
+2️⃣  CONFIGURE ENVIRONMENT VARIABLES
+   ────────────────────────────────
+   Create .env.local file with:
+   
+   DATABASE_URL=postgresql://username:password@localhost:5432/qms_db
+   NEXTAUTH_SECRET=run_openssl_rand_-base64_32_to_generate_this
+   NEXTAUTH_URL=http://localhost:3000
+   
+   📝 See .env.example for template
+
+3️⃣  INITIALIZE DATABASE
+   ────────────────────────────────
+   Command:  npm run db:init
+   
+   This creates tables and admin user
+
+4️⃣  START THE APPLICATION
+   ────────────────────────────────
+   Command:  npm run dev
+   
+   Open:  http://localhost:3000
+
+5️⃣  LOGIN
+   ────────────────────────────────
+   Email:     admin@qms.com
+   Password:  admin123
+   
+   ⚠️  CHANGE PASSWORD AFTER FIRST LOGIN!
+
+═══════════════════════════════════════════════════════════════════════
+
+📁 WHAT WAS BUILT:
+
+✅ Login page with authentication
+✅ PostgreSQL database integration  
+✅ Protected dashboard routes
+✅ Header with "Quality Management System" title
+✅ User profile menu in header (right side)
+✅ Collapsible left sidebar menu
+✅ Footer with links
+✅ 6 complete dashboard pages:
+   - Dashboard (overview & statistics)
+   - Documents (document management)
+   - Quality Checks (inspections & audits)
+   - Reports (view & download)
+   - Users (user management)
+   - Settings (configuration)
+
+═══════════════════════════════════════════════════════════════════════
+
+🎨 FEATURES:
+
+- Modern, responsive design
+- Dark mode support
+- Collapsible sidebar
+- Search functionality
+- User authentication & authorization
+- Session management
+- Beautiful UI with Tailwind CSS
+- Professional icons (Lucide React)
+
+═══════════════════════════════════════════════════════════════════════
+
+📚 DOCUMENTATION:
+
+- README.md         → Complete technical documentation
+- SETUP.md          → Detailed setup instructions  
+- PROJECT_SUMMARY.md → What was built & features
+- USER_GUIDE.md     → End-user documentation
+- QUICK_START.txt   → This file
+
+═══════════════════════════════════════════════════════════════════════
+
+🔧 NPM SCRIPTS:
+
+npm run dev      → Start development server (port 3000)
+npm run build    → Build for production
+npm start        → Start production server
+npm run db:init  → Initialize database with schema
+
+═══════════════════════════════════════════════════════════════════════
+
+❓ TROUBLESHOOTING:
+
+Can't connect to database?
+→ Make sure PostgreSQL is running
+→ Check DATABASE_URL in .env.local
+
+Can't login?
+→ Run: npm run db:init
+→ Check credentials: admin@qms.com / admin123
+
+Port 3000 in use?
+→ Run: npm run dev -- -p 3001
+
+═══════════════════════════════════════════════════════════════════════
+
+🚀 YOU'RE ALL SET!
+
+Run these 4 commands:
+1. createdb qms_db
+2. (Create .env.local file with your settings)
+3. npm run db:init
+4. npm run dev
+
+Then visit: http://localhost:3000
+
+═══════════════════════════════════════════════════════════════════════
+
+Need help? Check README.md for detailed instructions!
+
+Built with ❤️ using Next.js 15, PostgreSQL, and NextAuth.js
+

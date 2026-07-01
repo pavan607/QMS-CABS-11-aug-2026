@@ -1,0 +1,52 @@
+QMS — OFFLINE npm install (defence / air-gapped network)
+====================================================
+
+IMPORTANT: npm install must NOT use the internet. The project ships a local
+cache folder .npm-offline-cache (included in git). Refresh with vendor:npm-cache
+on a connected machine if package-lock.json changes, then copy or git pull on the target site.
+
+--- ON CONNECTED MACHINE (once, before transfer) ---
+
+1. Open project root in PowerShell
+2. Stop "npm run dev" if running (avoids locked files on Windows)
+3. Run:
+     npm run vendor:npm-cache
+   This fills .npm-offline-cache from package-lock.json (needs internet).
+4. Optional full bundle for USB:
+     npm run package
+   (includes source + .npm-offline-cache + sets offline=true in packaged .npmrc)
+
+5. Copy to defence site:
+   - Entire project folder INCLUDING:
+     .npm-offline-cache\
+     package-lock.json
+     package.json
+     .npmrc
+
+--- ON TARGET MACHINE (no internet) ---
+
+1. Open project root
+2. Run ONE of:
+     deploy\install-offline.bat
+   OR:
+     npm run install:offline
+   OR:
+     npm install --offline
+   (only if .npmrc contains offline=true — package script adds it)
+
+3. Build:
+     npm run build
+
+4. Configure .env and database (see deploy\README.md or env.example)
+
+--- DOCKER-ONLY DEPLOY (no npm on target) ---
+
+If you only run the pre-built Docker image (qms-image.tar), you do NOT need
+npm install on the target. Load image and use docker compose — see deploy\README.md.
+
+--- TROUBLESHOOTING ---
+
+- ENOTCACHED / network errors: cache incomplete or wrong OS/arch — rebuild
+  vendor:npm-cache on Windows x64 matching the target PC.
+- EBUSY on Windows: close dev server and retry vendor:npm-cache.
+- Use Node.js LTS version matching the build machine when possible.

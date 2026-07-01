@@ -1,0 +1,33 @@
+# Git and tooling
+.git
+.github
+.cursor
+.vscode
+.idea
+
+# Dependencies & build output
+node_modules
+.next
+out
+dist
+
+# Local env (secrets must be supplied at runtime)
+.env
+.env.*
+!.env.example
+
+# Uploads stay on the host via bind mount — do not bake customer data into the image
+public/uploads
+
+# Cache / offline artifacts (large)
+.npm-offline-cache
+
+# Docs and delivery helpers (not needed to run the app)
+*.md
+deploy
+
+# Tests / misc
+coverage
+*.log
+Thumbs.db
+.DS_Store

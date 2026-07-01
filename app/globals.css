@@ -1,0 +1,269 @@
+@import "tailwindcss";
+
+/* System stacks — avoids next/font/google fetching fonts.googleapis.com at build time */
+@theme inline {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 0 0% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 3.9%;
+  --primary: 0 0% 9%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 96.1%;
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96.1%;
+  --muted-foreground: 0 0% 45.1%;
+  --accent: 0 0% 96.1%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 89.8%;
+  --input: 0 0% 89.8%;
+  --ring: 0 0% 3.9%;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: 0 0% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 0 0% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 0 0% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 0 0% 9%;
+  --secondary: 0 0% 14.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 0 0% 14.9%;
+  --muted-foreground: 0 0% 63.9%;
+  --accent: 0 0% 14.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 14.9%;
+  --input: 0 0% 14.9%;
+  --ring: 0 0% 83.1%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/*
+ * Theme opacity utilities (bg-muted/40, border-primary/30, etc.) use color-mix() in
+ * Tailwind v4. Browsers without color-mix() would otherwise get solid, opaque colors.
+ * hsl(var(--token) / α) is supported in Chrome 65+, Firefox 52+, Edge 79+.
+ */
+@layer utilities {
+  .bg-muted\/10 {
+    background-color: hsl(var(--muted) / 0.1);
+  }
+  .bg-muted\/20 {
+    background-color: hsl(var(--muted) / 0.2);
+  }
+  .bg-muted\/30 {
+    background-color: hsl(var(--muted) / 0.3);
+  }
+  .bg-muted\/40 {
+    background-color: hsl(var(--muted) / 0.4);
+  }
+  .bg-muted\/50 {
+    background-color: hsl(var(--muted) / 0.5);
+  }
+
+  .hover\:bg-muted\/10:hover {
+    background-color: hsl(var(--muted) / 0.1);
+  }
+  .hover\:bg-muted\/20:hover {
+    background-color: hsl(var(--muted) / 0.2);
+  }
+  .hover\:bg-muted\/30:hover {
+    background-color: hsl(var(--muted) / 0.3);
+  }
+  .hover\:bg-muted\/50:hover {
+    background-color: hsl(var(--muted) / 0.5);
+  }
+
+  .bg-primary\/5 {
+    background-color: hsl(var(--primary) / 0.05);
+  }
+  .bg-primary\/10 {
+    background-color: hsl(var(--primary) / 0.1);
+  }
+
+  .border-primary\/30 {
+    border-color: hsl(var(--primary) / 0.3);
+  }
+
+  .bg-destructive\/10 {
+    background-color: hsl(var(--destructive) / 0.1);
+  }
+  .border-destructive\/30 {
+    border-color: hsl(var(--destructive) / 0.3);
+  }
+  .border-destructive\/50 {
+    border-color: hsl(var(--destructive) / 0.5);
+  }
+
+  .border-border\/40 {
+    border-color: hsl(var(--border) / 0.4);
+  }
+
+  .text-foreground\/70 {
+    color: hsl(var(--foreground) / 0.7);
+  }
+}
+
+/*
+ * Plan B: comma-style hsla() for browsers older than Chrome 65 / Firefox 52 / Edge 79.
+ * Uses fixed light/dark values that match :root and .dark above.
+ */
+@layer utilities {
+  @supports not (color: hsl(0 0% 0% / 0.5)) {
+    .bg-muted\/10 {
+      background-color: hsla(0, 0%, 96.1%, 0.1);
+    }
+    .bg-muted\/20 {
+      background-color: hsla(0, 0%, 96.1%, 0.2);
+    }
+    .bg-muted\/30 {
+      background-color: hsla(0, 0%, 96.1%, 0.3);
+    }
+    .bg-muted\/40 {
+      background-color: hsla(0, 0%, 96.1%, 0.4);
+    }
+    .bg-muted\/50 {
+      background-color: hsla(0, 0%, 96.1%, 0.5);
+    }
+
+    .hover\:bg-muted\/10:hover {
+      background-color: hsla(0, 0%, 96.1%, 0.1);
+    }
+    .hover\:bg-muted\/20:hover {
+      background-color: hsla(0, 0%, 96.1%, 0.2);
+    }
+    .hover\:bg-muted\/30:hover {
+      background-color: hsla(0, 0%, 96.1%, 0.3);
+    }
+    .hover\:bg-muted\/50:hover {
+      background-color: hsla(0, 0%, 96.1%, 0.5);
+    }
+
+    .bg-primary\/5 {
+      background-color: hsla(0, 0%, 9%, 0.05);
+    }
+    .bg-primary\/10 {
+      background-color: hsla(0, 0%, 9%, 0.1);
+    }
+
+    .border-primary\/30 {
+      border-color: hsla(0, 0%, 9%, 0.3);
+    }
+
+    .bg-destructive\/10 {
+      background-color: hsla(0, 84.2%, 60.2%, 0.1);
+    }
+    .border-destructive\/30 {
+      border-color: hsla(0, 84.2%, 60.2%, 0.3);
+    }
+    .border-destructive\/50 {
+      border-color: hsla(0, 84.2%, 60.2%, 0.5);
+    }
+
+    .border-border\/40 {
+      border-color: hsla(0, 0%, 89.8%, 0.4);
+    }
+
+    .text-foreground\/70 {
+      color: hsla(0, 0%, 3.9%, 0.7);
+    }
+
+    .dark .bg-muted\/10,
+    .dark .hover\:bg-muted\/10:hover {
+      background-color: hsla(0, 0%, 14.9%, 0.1);
+    }
+    .dark .bg-muted\/20,
+    .dark .hover\:bg-muted\/20:hover {
+      background-color: hsla(0, 0%, 14.9%, 0.2);
+    }
+    .dark .bg-muted\/30,
+    .dark .hover\:bg-muted\/30:hover {
+      background-color: hsla(0, 0%, 14.9%, 0.3);
+    }
+    .dark .bg-muted\/40 {
+      background-color: hsla(0, 0%, 14.9%, 0.4);
+    }
+    .dark .bg-muted\/50,
+    .dark .hover\:bg-muted\/50:hover {
+      background-color: hsla(0, 0%, 14.9%, 0.5);
+    }
+
+    .dark .bg-primary\/5 {
+      background-color: hsla(0, 0%, 98%, 0.05);
+    }
+    .dark .bg-primary\/10 {
+      background-color: hsla(0, 0%, 98%, 0.1);
+    }
+    .dark .border-primary\/30 {
+      border-color: hsla(0, 0%, 98%, 0.3);
+    }
+
+    .dark .bg-destructive\/10 {
+      background-color: hsla(0, 62.8%, 30.6%, 0.1);
+    }
+    .dark .border-destructive\/30 {
+      border-color: hsla(0, 62.8%, 30.6%, 0.3);
+    }
+    .dark .border-destructive\/50 {
+      border-color: hsla(0, 62.8%, 30.6%, 0.5);
+    }
+
+    .dark .border-border\/40 {
+      border-color: hsla(0, 0%, 14.9%, 0.4);
+    }
+
+    .dark .text-foreground\/70 {
+      color: hsla(0, 0%, 98%, 0.7);
+    }
+  }
+}
