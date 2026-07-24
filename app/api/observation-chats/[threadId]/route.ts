@@ -5,6 +5,8 @@ import {
   getObservationMessages,
   fetchInspectionForChatAccess,
   canAccessObservationChat,
+  canReplyObservationChat,
+  canCloseObservationChat,
 } from '@/lib/observation-chats';
 
 export async function GET(
@@ -19,6 +21,7 @@ export async function GET(
 
     const userId = parseInt((session.user as { id?: string }).id || '0', 10);
     const userRole = (session.user as { role?: string }).role || 'initiator';
+    const employeeId = (session.user as { employee_id?: string }).employee_id;
     const { threadId: threadIdParam } = await params;
     const threadId = parseInt(threadIdParam, 10);
 
@@ -32,16 +35,20 @@ export async function GET(
       return NextResponse.json({ error: 'Inspection request not found' }, { status: 404 });
     }
 
-    const allowed = await canAccessObservationChat(userId, userRole, ir);
+    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId);
     if (!allowed) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
     const messages = await getObservationMessages(threadId);
+    const canReply = await canReplyObservationChat(userId, userRole, thread.part, ir);
+    const canClose = await canCloseObservationChat(userId, userRole, thread.part, ir);
 
     return NextResponse.json({
       thread,
       messages,
+      can_reply: canReply,
+      can_close: canClose,
       inspection: {
         id: ir.id,
         request_number: ir.request_number,

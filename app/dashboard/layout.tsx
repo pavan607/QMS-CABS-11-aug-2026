@@ -46,8 +46,16 @@ export default function DashboardLayout({
   const permissions = usePermissions();
 
   const rawRole = (session?.user as { role?: string })?.role || '';
-  const showObservationChats =
-    rawRole === 'inspector' || rawRole === 'ordaqa_inspector' || rawRole === 'initiator';
+  const showObservationChats = [
+    'inspector',
+    'ordaqa_inspector',
+    'initiator',
+    'request_approver',
+    'qa_approver',
+    'qa_head',
+    'ordaqa_head',
+    'administrator',
+  ].includes(rawRole);
 
   const [pwDialogOpen, setPwDialogOpen] = useState(false);
   const [pwForm, setPwForm] = useState({ current: '', newPw: '', confirm: '' });

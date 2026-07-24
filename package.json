@@ -18,6 +18,8 @@
     "start:lan": "next start -H 0.0.0.0",
     "db:init": "tsx database/init.ts",
     "db:test": "tsx database/test-connection.ts",
+    "test:inspection-types-pool": "tsx scripts/test-inspection-types-pool.ts",
+    "db:free-idle-pgadmin": "tsx scripts/free-idle-pgadmin-connections.ts",
     "db:check-users": "tsx database/check-users.ts",
     "db:reset-password": "tsx database/reset-password.ts",
     "db:reset-all-passwords": "tsx database/reset-all-passwords.ts",

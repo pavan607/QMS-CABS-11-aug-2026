@@ -133,7 +133,7 @@ export default function ObservationChatsPage() {
   const loadThreads = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/observation-chats?exclude_closed=true', { cache: 'no-store' });
+      const res = await fetch('/api/observation-chats', { cache: 'no-store' });
       const data = await res.json();
       if (res.ok) {
         const list: ThreadItem[] = data.threads || [];
@@ -168,7 +168,15 @@ export default function ObservationChatsPage() {
         ? 'DGAQA Inspector'
         : userRole === 'initiator'
           ? 'Initiator'
-          : 'User';
+          : userRole === 'request_approver'
+            ? 'Request Approver'
+            : userRole === 'qa_approver'
+              ? 'Team Head – QA'
+              : userRole === 'qa_head'
+                ? 'QA Head'
+                : userRole === 'ordaqa_head'
+                  ? 'ORDAQA Head'
+                  : 'User';
 
   const openThreads = threads.filter((t) => !t.is_closed);
   const closedThreads = threads.filter((t) => t.is_closed);
@@ -232,7 +240,7 @@ export default function ObservationChatsPage() {
             <p className="text-sm text-muted-foreground text-center py-12">Loading...</p>
           ) : inspectionGroups.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-12">
-              No observation chats yet. Chats appear when inspectors send observations in Part IV or Part V.
+              No observation chats yet. Chats appear when Part IV or Part V observations are submitted.
             </p>
           ) : (
             <div className="divide-y">

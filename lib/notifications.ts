@@ -19,7 +19,11 @@ export type NotificationType =
   | 'memo_returned_to_qa_head'
   | 'team_head_qa_nominated'
   | 'part2_inspector_assigned'
+  | 'part2_inspector_replaced'
   | 'part4_saved'
+  | 'part4_pending_team_head_approval'
+  | 'part4_team_head_rejected'
+  | 'part4_team_head_approved'
   | 'part4_forwarded_for_part5'
   | 'part3_completed'
   | 'part5_pending_ordaqa_approval'
@@ -84,6 +88,22 @@ async function lookupUserNames(userIds: number[]): Promise<string> {
     .map((row: { name: string }) => row.name?.trim())
     .filter((n: string | undefined): n is string => !!n);
   return names.length ? names.join(', ') : '—';
+}
+
+function normalizePositiveIds(userIds: unknown[]): number[] {
+  return [
+    ...new Set(
+      userIds
+        .map((x) => parseInt(String(x), 10))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+}
+
+function sameIdSet(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const setB = new Set(b);
+  return a.every((id) => setB.has(id));
 }
 
 /**
@@ -859,13 +879,7 @@ export async function notifyInspectorsAssignedPart2(
   initiatorId?: number | null,
   teamHeadName?: string
 ): Promise<void> {
-  const ids = [
-    ...new Set(
-      inspectorUserIds
-        .map((x) => parseInt(String(x), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    ),
-  ];
+  const ids = normalizePositiveIds(inspectorUserIds);
   if (ids.length === 0) return;
 
   const result = await pool.query(
@@ -897,6 +911,96 @@ export async function notifyInspectorsAssignedPart2(
   }
 }
 
+/**
+ * When Team Head replaces / updates Part II Inspector(s), notify removed, newly assigned, and initiator
+ * with explicit "X has been replaced with Y" wording.
+ */
+export async function notifyInspectorsReassignedPart2(
+  requestId: number,
+  requestNumber: string,
+  previousInspectorIds: unknown[],
+  nextInspectorIds: unknown[],
+  initiatorId?: number | null,
+  teamHeadName?: string
+): Promise<void> {
+  const previousIds = normalizePositiveIds(previousInspectorIds);
+  const nextIds = normalizePositiveIds(nextInspectorIds);
+  if (sameIdSet(previousIds, nextIds)) return;
+
+  const previousSet = new Set(previousIds);
+  const nextSet = new Set(nextIds);
+  const removedIds = previousIds.filter((id) => !nextSet.has(id));
+  const addedIds = nextIds.filter((id) => !previousSet.has(id));
+
+  const teamHead = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
+  const [removedNames, addedNames, nextNames] = await Promise.all([
+    lookupUserNames(removedIds),
+    lookupUserNames(addedIds),
+    lookupUserNames(nextIds),
+  ]);
+
+  const replacementSummary =
+    removedIds.length > 0 && addedIds.length > 0
+      ? `${removedNames} ${removedIds.length > 1 ? 'have' : 'has'} been replaced with ${addedNames}`
+      : removedIds.length > 0
+        ? `${removedNames} ${removedIds.length > 1 ? 'have' : 'has'} been unassigned; current Inspector / QA Rep: ${nextNames}`
+        : `${addedNames} ${addedIds.length > 1 ? 'have' : 'has'} been assigned as Inspector / QA Rep (in addition to existing)`;
+
+  if (removedIds.length > 0) {
+    const removedMessage =
+      addedIds.length > 0
+        ? `Inspection request ${requestNumber}: You have been replaced with ${addedNames} by ${teamHead}.`
+        : `Inspection request ${requestNumber}: You have been unassigned as Inspector / QA Rep by ${teamHead}. Current assignee(s): ${nextNames}.`;
+
+    await createBulkNotifications(removedIds, {
+      title: 'Inspector / QA Rep replaced',
+      message: removedMessage,
+      type: 'part2_inspector_replaced',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  if (addedIds.length > 0) {
+    const activeAdded = await pool.query(
+      `SELECT id FROM users WHERE id = ANY($1::int[]) AND role = 'inspector' AND COALESCE(status, 'active') = 'active'`,
+      [addedIds]
+    );
+    const validAddedIds = activeAdded.rows.map((r: { id: number }) => r.id);
+    if (validAddedIds.length > 0) {
+      const addedMessage =
+        removedIds.length > 0
+          ? `Inspection request ${requestNumber}: ${removedNames} ${removedIds.length > 1 ? 'have' : 'has'} been replaced with you. Complete inspector Part II Outstation inspection details and part-4.`
+          : `Inspection request ${requestNumber}: You were assigned on Part II by ${teamHead}. Complete inspector Part II Outstation inspection details and part-4.`;
+
+      await createBulkNotifications(validAddedIds, {
+        title:
+          removedIds.length > 0
+            ? `Assigned as Inspector / QA Rep (replacement) by ${teamHead}`
+            : `Assigned as Inspector / QA Rep by ${teamHead}`,
+        message: addedMessage,
+        type: removedIds.length > 0 ? 'part2_inspector_replaced' : 'part2_inspector_assigned',
+        entityType: 'inspection_request',
+        entityId: requestId,
+        sendEmail: true,
+      });
+    }
+  }
+
+  if (initiatorId != null && Number(initiatorId) > 0) {
+    await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
+      title:
+        removedIds.length > 0 && addedIds.length > 0
+          ? 'Inspector / QA Rep replaced'
+          : 'Inspector assignment updated',
+      message: `Your inspection request ${requestNumber}: ${replacementSummary}.`,
+      type: 'part2_inspector_replaced',
+      sendEmail: true,
+    });
+  }
+}
+
 /** Context from `inspection_requests` row when Part IV is saved (before/after update — IDs unchanged). */
 export interface Part4SavedStakeholderContext {
   initiator_id: number | null;
@@ -908,8 +1012,9 @@ export interface Part4SavedStakeholderContext {
 }
 
 /**
- * After Part IV — R&QA Inspection Report is saved, notify initiator, Team Head – QA, other assigned inspectors,
- * and ORDAQA assignee (when forwarded to ORDAQA). Excludes the user who saved Part IV.
+ * After Part IV — R&QA Inspection Report is saved, notify initiator and other assigned inspectors.
+ * Team Head – QA gets a dedicated pending-approval notification (see notifyTeamHeadPart4PendingApproval).
+ * Excludes the user who saved Part IV.
  */
 export async function notifyStakeholdersPart4Saved(
   requestId: number,
@@ -926,7 +1031,6 @@ export async function notifyStakeholdersPart4Saved(
   };
 
   add(ctx.initiator_id);
-  add(ctx.nominated_team_head_id);
   add(ctx.inspector_id);
 
   if (ctx.inspector_ids_raw) {
@@ -938,14 +1042,105 @@ export async function notifyStakeholdersPart4Saved(
     }
   }
 
-  /* ORDAQA assignee receives a dedicated Part V notification — see notifyOrdaqaAssigneePart4ForwardedForPart5 */
+  if (recipientIds.size === 0) return;
+
+  await createBulkNotifications(Array.from(recipientIds), {
+    title: 'Part IV — R&QA Inspection report submitted',
+    message: `Inspection request ${requestNumber}: Part IV (CABS R&QA Inspection Report) has been submitted and is awaiting Team Head – QA approval.`,
+    type: 'part4_saved',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
+ * After Part IV is submitted — notify nominated Team Head – QA (or all R&QA Team Heads on skip-path).
+ */
+export async function notifyTeamHeadPart4PendingApproval(
+  requestId: number,
+  requestNumber: string,
+  nominatedTeamHeadId: number | null | undefined,
+  skipsPart2Part3: boolean
+): Promise<void> {
+  const recipientIds = new Set<number>();
+
+  if (skipsPart2Part3) {
+    const { listActiveRqaTeamHeadUserIds } = await import('@/lib/rqa-users');
+    for (const id of await listActiveRqaTeamHeadUserIds()) recipientIds.add(id);
+  } else if (nominatedTeamHeadId != null && Number(nominatedTeamHeadId) > 0) {
+    recipientIds.add(Number(nominatedTeamHeadId));
+  }
 
   if (recipientIds.size === 0) return;
 
   await createBulkNotifications(Array.from(recipientIds), {
-    title: 'Part IV — R&QA Inspection report saved',
-    message: `Inspection request ${requestNumber}: Part IV (CABS R&QA Inspection Report) has been saved. Review the IR for next steps (e.g. Team Head – QA: start or complete inspection).`,
-    type: 'part4_saved',
+    title: 'Part IV pending your approval',
+    message: `Inspection request ${requestNumber}: Part IV (R&QA Inspection Report) was submitted and awaits your Approve or Reject (with comments).`,
+    type: 'part4_pending_team_head_approval',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
+ * After Team Head – QA rejects Part IV — notify the inspector(s) who must revise and resubmit.
+ */
+export async function notifyInspectorsPart4Rejected(
+  requestId: number,
+  requestNumber: string,
+  inspectorUserIds: unknown[],
+  teamHeadName: string,
+  commentSnippet: string
+): Promise<void> {
+  const ids = [
+    ...new Set(
+      inspectorUserIds
+        .map((x) => parseInt(String(x), 10))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (ids.length === 0) return;
+
+  const who = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
+  const snippet =
+    commentSnippet.length > 200 ? `${commentSnippet.slice(0, 200)}…` : commentSnippet;
+
+  await createBulkNotifications(ids, {
+    title: 'Part IV rejected — revise and resubmit',
+    message: `Inspection request ${requestNumber}: ${who} rejected Part IV. Comments: ${snippet}`,
+    type: 'part4_team_head_rejected',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
+ * After Team Head – QA approves Part IV — notify inspector(s).
+ */
+export async function notifyInspectorsPart4Approved(
+  requestId: number,
+  requestNumber: string,
+  inspectorUserIds: unknown[],
+  teamHeadName?: string
+): Promise<void> {
+  const ids = [
+    ...new Set(
+      inspectorUserIds
+        .map((x) => parseInt(String(x), 10))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    ),
+  ];
+  if (ids.length === 0) return;
+
+  const who = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
+
+  await createBulkNotifications(ids, {
+    title: 'Part IV approved by Team Head – QA',
+    message: `Inspection request ${requestNumber}: Part IV was approved by ${who}. You may proceed with the next workflow step.`,
+    type: 'part4_team_head_approved',
     entityType: 'inspection_request',
     entityId: requestId,
     sendEmail: true,

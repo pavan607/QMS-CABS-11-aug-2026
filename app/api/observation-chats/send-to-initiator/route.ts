@@ -26,9 +26,9 @@ export async function POST(request: NextRequest) {
     const observation = String(body.observation || '').trim();
     const actionRequired = String(body.action_required || '').trim();
 
-    if (!inspectionRequestId || !observationKey || !observation || !actionRequired) {
+    if (!inspectionRequestId || !observationKey || !observation) {
       return NextResponse.json(
-        { error: 'Observation and action required must both be filled before sending' },
+        { error: 'Observation text is required before sending' },
         { status: 400 }
       );
     }

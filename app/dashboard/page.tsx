@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
 
 interface DashboardStats {
   byStatus: Array<{ status: string; count: string }>;
@@ -96,7 +97,7 @@ export default function DashboardPage() {
   }, [status]);
 
   const fetchObsChatStats = async () => {
-    if (!(userRole === 'inspector' || userRole === 'ordaqa_inspector' || userRole === 'initiator')) return;
+    if (!roleCanViewObservationChats(userRole)) return;
     try {
       const res = await fetch('/api/observation-chats?exclude_closed=true', { cache: 'no-store' });
       const obsData = await res.json();
@@ -114,7 +115,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (status !== 'authenticated') return;
-    if (!(userRole === 'inspector' || userRole === 'ordaqa_inspector' || userRole === 'initiator')) return;
+    if (!roleCanViewObservationChats(userRole)) return;
     const onChatUpdate = () => void fetchObsChatStats();
     window.addEventListener('observation-chat-acknowledged', onChatUpdate);
     const interval = setInterval(fetchObsChatStats, 30000);
@@ -129,7 +130,7 @@ export default function DashboardPage() {
       const [statsRes, notifRes, obsChatRes] = await Promise.all([
         fetch('/api/inspection-requests/stats'),
         fetch('/api/notifications?unread_only=true&limit=5'),
-        (userRole === 'inspector' || userRole === 'ordaqa_inspector' || userRole === 'initiator')
+        roleCanViewObservationChats(userRole)
           ? fetch('/api/observation-chats?exclude_closed=true')
           : Promise.resolve(null),
       ]);
@@ -322,8 +323,8 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {/* Observation Chats — R&QA, DGAQA & Initiator */}
-      {(userRole === 'inspector' || userRole === 'ordaqa_inspector' || userRole === 'initiator') && (
+      {/* Observation Chats — all Parts 1–5 stakeholders */}
+      {roleCanViewObservationChats(userRole) && (
         <Card
           className={`border-0 shadow-sm ${
             obsChatStats.unreadCount > 0

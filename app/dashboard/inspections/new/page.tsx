@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { ArrowLeft, AlertCircle, Save, FileText, ChevronDown, ChevronRight, X, Search, Paperclip, Loader2, CalendarDays } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Save, FileText, ChevronDown, ChevronRight, X, Search, Paperclip, Loader2, CalendarDays, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   parseYmdLocal,
@@ -27,7 +27,6 @@ import {
   formatPart1Venue,
   parsePart1Venue,
   validatePart1InspectionAdvanceNotice,
-  formatPart1VenueAdvanceNoticeLabel,
   getPart1InspectionFromMinDateTime,
   parsePart1RequestSubmissionDate,
   toDateTimeLocalValue,
@@ -101,6 +100,19 @@ function docRowStarted(d: { approved?: string; doc_no?: string; amd_no?: string;
   if (String(d.rev_no ?? '').trim() !== '') return true;
   if (d.date?.trim()) return true;
   return false;
+}
+
+function YesNoSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <Select value={value || undefined} onValueChange={onChange}>
+      <SelectTrigger className="w-[120px]"><SelectValue placeholder="Select" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="yes">Yes</SelectItem>
+        <SelectItem value="no">No</SelectItem>
+        <SelectItem value="na">N/A</SelectItem>
+      </SelectContent>
+    </Select>
+  );
 }
 
 function InspectionStageSelect({
@@ -754,45 +766,8 @@ function SearchableLruSelect({
   );
 }
 
-function NewInspectionRequestForm() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const editId = searchParams.get('edit');
-  const { data: session } = useSession();
-  const permissions = usePermissions();
-  const [formReady, setFormReady] = useState(false);
-  const [submitError, setSubmitError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [autosaveStatus, setAutosaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const skipAutosaveRef = useRef(0);
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const draftResumeCheckedRef = useRef(false);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const suppressCascadeRef = useRef(0);
-  const subsystemFetchGenRef = useRef(0);
-  const lruFetchGenRef = useRef(0);
-  const sruFetchGenRef = useRef(0);
-  const autofillGenRef = useRef(0);
-  const skipAutofillRef = useRef(0);
-  const [autofillSource, setAutofillSource] = useState<string | null>(null);
-  const [loadedIrStatus, setLoadedIrStatus] = useState<string | null>(null);
-  const [loadedRequestNumber, setLoadedRequestNumber] = useState<string | null>(null);
-  const [hasExistingLogbook, setHasExistingLogbook] = useState(false);
-
-  const [logbookFile, setLogbookFile] = useState<File | null>(null);
-  const [userSignature, setUserSignature] = useState<string | null>(null);
-  const [draftNoticeOpen, setDraftNoticeOpen] = useState(false);
-  const [draftNoticeDocLabel, setDraftNoticeDocLabel] = useState('TS');
-
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [subsystems, setSubsystems] = useState<Subsystem[]>([]);
-  const [lrus, setLrus] = useState<LRU[]>([]);
-  const [srus, setSrus] = useState<SRU[]>([]);
-  const [availableSerials, setAvailableSerials] = useState<string[]>([]);
-  const [inspectionTypeGroups, setInspectionTypeGroups] = useState<InspectionTypeGroup[]>([]);
-  const [requestApprovers, setRequestApprovers] = useState<Approver[]>([]);
-
-  const [form, setForm] = useState({
+function createEmptyPart1Form() {
+  return {
     project_id: '',
     subsystem_id: '',
     lru_id: '',
@@ -844,7 +819,50 @@ function NewInspectionRequestForm() {
     nominated_request_approver_id: '',
     request_date: '',
     description: '',
-  });
+  };
+}
+
+function NewInspectionRequestForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const editId = searchParams.get('edit');
+  const { data: session } = useSession();
+  const permissions = usePermissions();
+  const [formReady, setFormReady] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const skipAutosaveRef = useRef(0);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftResumeCheckedRef = useRef(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const suppressCascadeRef = useRef(0);
+  const subsystemFetchGenRef = useRef(0);
+  const lruFetchGenRef = useRef(0);
+  const sruFetchGenRef = useRef(0);
+  const autofillGenRef = useRef(0);
+  const skipAutofillRef = useRef(0);
+  const [autofillSource, setAutofillSource] = useState<string | null>(null);
+  const [loadedIrStatus, setLoadedIrStatus] = useState<string | null>(null);
+  const [loadedRequestNumber, setLoadedRequestNumber] = useState<string | null>(null);
+  const [hasExistingLogbook, setHasExistingLogbook] = useState(false);
+
+  const [logbookFile, setLogbookFile] = useState<File | null>(null);
+  const [userSignature, setUserSignature] = useState<string | null>(null);
+  const [draftNoticeOpen, setDraftNoticeOpen] = useState(false);
+  const [draftNoticeDocLabel, setDraftNoticeDocLabel] = useState('TS');
+
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [subsystems, setSubsystems] = useState<Subsystem[]>([]);
+  const [lrus, setLrus] = useState<LRU[]>([]);
+  const [srus, setSrus] = useState<SRU[]>([]);
+  const [availableSerials, setAvailableSerials] = useState<string[]>([]);
+  const [inspectionTypeGroups, setInspectionTypeGroups] = useState<InspectionTypeGroup[]>([]);
+  const [inspectionTypesError, setInspectionTypesError] = useState('');
+  const [inspectionTypesLoading, setInspectionTypesLoading] = useState(false);
+  const [requestApprovers, setRequestApprovers] = useState<Approver[]>([]);
+
+  const [form, setForm] = useState(createEmptyPart1Form);
 
   useEffect(() => {
     fetchProjects();
@@ -1176,6 +1194,52 @@ function NewInspectionRequestForm() {
     }
   }, [session?.user, isSubmitting, editId, form]);
 
+  const handleClearLocalData = () => {
+    if (editId || isSubmitting) return;
+    if (
+      !window.confirm(
+        'Clear all form data and remove locally saved progress? This cannot be undone.',
+      )
+    ) {
+      return;
+    }
+
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+
+    const uid = (session?.user as { id?: string })?.id;
+    if (uid) clearPart1FormDraftLocal(uid);
+
+    skipAutosaveRef.current = 2;
+    suppressCascadeRef.current = 2;
+    skipAutofillRef.current = 2;
+    setAutosaveStatus('idle');
+    setSubmitError('');
+    setFieldErrors({});
+    setLogbookFile(null);
+    setAutofillSource(null);
+    setHasExistingLogbook(false);
+    setSubsystems([]);
+    setLrus([]);
+    setSrus([]);
+    setAvailableSerials([]);
+
+    const name = session?.user?.name || '';
+    const designation = String(
+      (session?.user as { designation?: string })?.designation || '',
+    ).trim();
+
+    setForm({
+      ...createEmptyPart1Form(),
+      request_date: normalizePart1RequestCreationDateTime(''),
+      designer_rep_name: form.designer_rep_name || name,
+      designer_rep_designation: form.designer_rep_designation || designation,
+      designer_rep_contact: form.designer_rep_contact,
+    });
+  };
+
   useEffect(() => {
     if (!formReady || !session?.user) return;
     if (skipAutosaveRef.current > 0) {
@@ -1344,12 +1408,37 @@ function NewInspectionRequestForm() {
     })();
   }, [formReady, session?.user, editId]);
 
-  const fetchInspectionTypes = async () => {
+  const fetchInspectionTypes = async (attempt = 1) => {
+    const maxAttempts = 5;
+    if (attempt === 1) {
+      setInspectionTypesLoading(true);
+      setInspectionTypesError('');
+    }
     try {
       const res = await fetch('/api/inspection-types?active_only=true');
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to load inspection types (${res.status})`);
+      }
       setInspectionTypeGroups(data.groups || []);
-    } catch (e) { console.error(e); }
+      if (!(data.groups || []).length) {
+        setInspectionTypesError('No active inspection types found. Add them under Inspection Types.');
+      } else {
+        setInspectionTypesError('');
+      }
+      setInspectionTypesLoading(false);
+    } catch (e) {
+      console.error(e);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, attempt * 800));
+        return fetchInspectionTypes(attempt + 1);
+      }
+      setInspectionTypeGroups([]);
+      setInspectionTypesError(
+        e instanceof Error ? e.message : 'Failed to load inspection types. Click retry.',
+      );
+      setInspectionTypesLoading(false);
+    }
   };
 
   const fetchRequestApprovers = async () => {
@@ -1791,17 +1880,6 @@ function NewInspectionRequestForm() {
     </div>
   );
 
-  const YesNoSelect = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className="w-[120px]"><SelectValue placeholder="Select" /></SelectTrigger>
-      <SelectContent>
-        <SelectItem value="yes">Yes</SelectItem>
-        <SelectItem value="no">No</SelectItem>
-        <SelectItem value="na">N/A</SelectItem>
-      </SelectContent>
-    </Select>
-  );
-
   if (!formReady) {
     return (
       <div className="space-y-6 max-w-5xl mx-auto">
@@ -1846,7 +1924,7 @@ function NewInspectionRequestForm() {
           )}
         </div>
         {!editId && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground sm:ml-auto sm:pt-2 shrink-0">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground sm:ml-auto sm:pt-2 shrink-0">
           {autosaveStatus === 'saving' && (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -1859,6 +1937,17 @@ function NewInspectionRequestForm() {
           {autosaveStatus === 'error' && (
             <span className="text-destructive">Could not save progress locally</span>
           )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={handleClearLocalData}
+            disabled={isSubmitting}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Clear data
+          </Button>
         </div>
         )}
       </div>
@@ -2271,6 +2360,26 @@ function NewInspectionRequestForm() {
             <CardDescription>12-17: Stage, mode, date and time, and venue</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {(inspectionTypesLoading || inspectionTypesError) && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+                <span>
+                  {inspectionTypesLoading
+                    ? 'Loading inspection stage options…'
+                    : inspectionTypesError}
+                </span>
+                {!inspectionTypesLoading && inspectionTypesError && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0"
+                    onClick={() => fetchInspectionTypes()}
+                  >
+                    Retry
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label>12. Previous Stage Cleared *</Label>
@@ -2461,19 +2570,6 @@ function NewInspectionRequestForm() {
 
             <div className="grid gap-2">
               <Label>17. Inspection date &amp; time *</Label>
-              {form.venue_category && formatPart1VenueAdvanceNoticeLabel(
-                form.venue_category,
-                getRequestSubmissionDate(),
-                form.request_date,
-              ) && (
-                <p className="text-xs text-red-500">
-                  {formatPart1VenueAdvanceNoticeLabel(
-                    form.venue_category,
-                    getRequestSubmissionDate(),
-                    form.request_date,
-                  )}
-                </p>
-              )}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                 <div className="grid gap-2">
                   <Label className="text-xs text-muted-foreground">From (date &amp; time)</Label>
@@ -2619,7 +2715,10 @@ function NewInspectionRequestForm() {
                     <span className="text-sm">{item.label}</span>
                   </div>
                   {item.key === 'previous_observations_status' ? (
-                    <Select value={(form.confirmations as any)[item.key] || ''} onValueChange={(v) => updateConfirmation(item.key, v)}>
+                    <Select
+                      value={(form.confirmations as any)[item.key] || undefined}
+                      onValueChange={(v) => updateConfirmation(item.key, v)}
+                    >
                       <SelectTrigger className="w-[120px]"><SelectValue placeholder="Select" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="open">Open</SelectItem>

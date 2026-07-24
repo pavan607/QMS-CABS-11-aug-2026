@@ -69,6 +69,12 @@ import {
   canUserCompleteInspection,
   canUserApproveOrdqaPart5,
   canUserOrdqaHeadPart5SendBack,
+  canUserApprovePart4,
+  canUserRejectPart4,
+  part4PendingTeamHeadApproval,
+  part4ApprovedByTeamHead,
+  part4RejectedByTeamHead,
+  getPart4TeamHeadRejectComment,
   ordqaPart5Submitted,
   ordqaPart5Approved,
   ordqaPart5Completed,
@@ -436,6 +442,7 @@ export default function InspectionDetailPage() {
   });
   const [inspectors, setInspectors] = useState<any[]>([]);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const actionMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendBackDialogOpen, setSendBackDialogOpen] = useState(false);
   const [sendBackComment, setSendBackComment] = useState('');
   const [forwardDialogOpen, setForwardDialogOpen] = useState(false);
@@ -446,6 +453,8 @@ export default function InspectionDetailPage() {
   const [qaRejectReason, setQaRejectReason] = useState('');
   const [part5SendBackDialogOpen, setPart5SendBackDialogOpen] = useState(false);
   const [part5SendBackComment, setPart5SendBackComment] = useState('');
+  const [part4RejectDialogOpen, setPart4RejectDialogOpen] = useState(false);
+  const [part4RejectComment, setPart4RejectComment] = useState('');
 
   useEffect(() => {
     if (params.id) {
@@ -489,8 +498,9 @@ export default function InspectionDetailPage() {
   };
 
   const showMessage = (type: 'success' | 'error', text: string) => {
+    if (actionMessageTimerRef.current) clearTimeout(actionMessageTimerRef.current);
     setActionMessage({ type, text });
-    setTimeout(() => setActionMessage(null), 4000);
+    actionMessageTimerRef.current = setTimeout(() => setActionMessage(null), 4000);
   };
 
   const handleWorkflowAction = async (
@@ -980,18 +990,21 @@ export default function InspectionDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Action message banner */}
+      {/* Action message — fixed so it stays visible without scrolling */}
       {actionMessage && (
-        <div className={`px-4 py-3 rounded-lg flex items-center justify-between transition-all ${
+        <div
+          role="status"
+          className={`fixed top-4 left-1/2 z-50 w-[min(36rem,calc(100%-2rem))] -translate-x-1/2 px-4 py-3 rounded-lg shadow-lg flex items-center justify-between transition-all ${
           actionMessage.type === 'success'
-            ? 'bg-green-50 border border-green-200 text-green-800 dark:bg-green-900/30 dark:border-green-800 dark:text-green-300'
-            : 'bg-red-50 border border-red-200 text-red-800 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300'
-        }`}>
+            ? 'bg-green-50 border border-green-200 text-green-800 dark:bg-green-900/95 dark:border-green-800 dark:text-green-300'
+            : 'bg-red-50 border border-red-200 text-red-800 dark:bg-red-900/95 dark:border-red-800 dark:text-red-300'
+        }`}
+        >
           <div className="flex items-center gap-2">
-            {actionMessage.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+            {actionMessage.type === 'success' ? <CheckCircle className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
             <span className="text-sm font-medium">{actionMessage.text}</span>
           </div>
-          <button onClick={() => setActionMessage(null)} className="text-current opacity-60 hover:opacity-100">
+          <button type="button" onClick={() => setActionMessage(null)} className="text-current opacity-60 hover:opacity-100 shrink-0 ml-3">
             <XCircle className="h-4 w-4" />
           </button>
         </div>
@@ -1247,6 +1260,53 @@ export default function InspectionDetailPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={part4RejectDialogOpen} onOpenChange={setPart4RejectDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reject Part IV (Team Head – QA)</DialogTitle>
+            <DialogDescription>
+              Return Part IV to the R&amp;QA Inspector for revision. They can update the report and resubmit for your approval.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="part4-reject-comment">Comments for R&amp;QA Inspector</Label>
+            <Textarea
+              id="part4-reject-comment"
+              rows={4}
+              placeholder="Describe what needs to be revised in Part IV..."
+              value={part4RejectComment}
+              onChange={(e) => setPart4RejectComment(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setPart4RejectDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-amber-300 text-amber-900 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+              onClick={async () => {
+                const trimmed = part4RejectComment.trim();
+                if (!trimmed) {
+                  showMessage('error', 'Please enter comments.');
+                  return;
+                }
+                const ok = await handleWorkflowAction('reject_part4', {
+                  comments: trimmed,
+                });
+                if (ok) {
+                  setPart4RejectComment('');
+                  setPart4RejectDialogOpen(false);
+                }
+              }}
+            >
+              Reject &amp; send back
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={qaRejectDialogOpen} onOpenChange={setQaRejectDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1316,24 +1376,16 @@ export default function InspectionDetailPage() {
             <Printer className="h-4 w-4" />
             Print PDF
           </Button>
-          {/* Part I author (creator) or admin: Edit + Submit for approval */}
-          {(inspection.initiator_id === permissions.userId || permissions.isAdmin()) && (
-            <>
-              {['pending', 'draft', 'returned_to_designer', 'pending_request_approval'].includes(inspection.status) && (
-                <Button variant="outline" asChild>
-                  <Link href={`/dashboard/inspections/new?edit=${inspection.id}`}>
-                    <Edit className="mr-2 h-4 w-4" />
-                    Edit Part I
-                  </Link>
-                </Button>
-              )}
-              {(inspection.status === 'pending' || inspection.status === 'draft' || inspection.status === 'returned_to_designer') && (
-                <Button onClick={() => handleWorkflowAction('submit_for_approval')}>
-                  {inspection.status === 'returned_to_designer' ? 'Resubmit for Request Approver' : 'Submit for Approval'}
-                </Button>
-              )}
-            </>
-          )}
+          {/* Part I author (creator) or admin: Edit Part I */}
+          {(inspection.initiator_id === permissions.userId || permissions.isAdmin()) &&
+            ['pending', 'draft', 'returned_to_designer', 'pending_request_approval'].includes(inspection.status) && (
+              <Button variant="outline" asChild>
+                <Link href={`/dashboard/inspections/new?edit=${inspection.id}`}>
+                  <Edit className="mr-2 h-4 w-4" />
+                  Edit Part I
+                </Link>
+              </Button>
+            )}
           {/* Request Approver: Send back / Reject / Forward */}
           {(inspection.status === 'pending_request_approval' || inspection.status === 'pending') && permissions.isRequestApprover() && (
             <>
@@ -1465,6 +1517,26 @@ export default function InspectionDetailPage() {
               Approve Part V
             </Button>
           )}
+          {/* Team Head - QA: Approve / Reject Part IV */}
+          {canUserRejectPart4(inspection, permissions.userId, permissions.userRole) && (
+            <Button
+              variant="outline"
+              className="border-amber-300 text-amber-900 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+              onClick={() => {
+                setPart4RejectComment('');
+                setPart4RejectDialogOpen(true);
+              }}
+            >
+              <XCircle className="mr-2 h-4 w-4" />
+              Reject Part IV
+            </Button>
+          )}
+          {canUserApprovePart4(inspection, permissions.userId, permissions.userRole) && (
+            <Button onClick={() => handleWorkflowAction('approve_part4')}>
+              <CheckCircle className="mr-2 h-4 w-4" />
+              Approve Part IV
+            </Button>
+          )}
           {/* Team Head - QA (qa_approver): Reject / Approve & Close after inspection completed */}
           {canUserQaApproverReject(
             inspection,
@@ -1500,11 +1572,6 @@ export default function InspectionDetailPage() {
               <DropdownMenuContent>
                 <DropdownMenuLabel>Workflow Actions</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {(inspection.status === 'pending' || inspection.status === 'draft' || inspection.status === 'returned_to_designer') && (
-                  <DropdownMenuItem onClick={() => handleWorkflowAction('submit_for_approval')}>
-                    {inspection.status === 'returned_to_designer' ? 'Resubmit for Request Approver' : 'Submit for Approval'}
-                  </DropdownMenuItem>
-                )}
                 {(inspection.status === 'pending_request_approval' || inspection.status === 'pending') && (
                   <>
                     <DropdownMenuItem
@@ -2306,7 +2373,12 @@ export default function InspectionDetailPage() {
                     {showPart2Step2Assign && (
                       <>
                         <Separator className="my-4" />
-                        <Part2Step2Form inspection={inspection} onComplete={fetchInspection} mode="assign" />
+                        <Part2Step2Form
+                          inspection={inspection}
+                          onComplete={fetchInspection}
+                          onSuccess={(msg) => showMessage('success', msg)}
+                          mode="assign"
+                        />
                       </>
                     )}
 
@@ -2319,7 +2391,12 @@ export default function InspectionDetailPage() {
                             Update assigned Inspector / QA Rep(s) only. Other Part II fields remain unchanged.
                           </p>
                         </div>
-                        <Part2Step2Form inspection={inspection} onComplete={fetchInspection} mode="edit" />
+                        <Part2Step2Form
+                          inspection={inspection}
+                          onComplete={fetchInspection}
+                          onSuccess={(msg) => showMessage('success', msg)}
+                          mode="edit"
+                        />
                       </>
                     )}
 
@@ -2462,11 +2539,16 @@ export default function InspectionDetailPage() {
 
                 if (isForwarded && canEditSection23 && (permissions.isOrdaqaHead() || permissions.isAdmin())) {
                   return (
-                    <Part3AssignForm inspection={inspection} inspectionId={inspection.id} onComplete={fetchInspection} />
+                    <Part3AssignForm
+                      inspection={inspection}
+                      inspectionId={inspection.id}
+                      onComplete={fetchInspection}
+                      onSuccess={(msg) => showMessage('success', msg)}
+                    />
                   );
                 }
 
-                if (showSection23 && (p3.memo_returned === 'yes' || isForwarded) && !canEditSection23) {
+                if (showSection23 && (p3.memo_returned === 'yes' || isForwarded)) {
                   const memoReturnedToQa = p3.memo_returned === 'yes';
                   const delegationType = p3.delegation_type;
                   const personLabel =
@@ -2549,12 +2631,81 @@ export default function InspectionDetailPage() {
                 const isAssignedInspector =
                   isUserAssignedPart2Inspector(inspection, permissions.userId) &&
                   ['assigned', 'in_progress'].includes(inspection.status);
+                const p4Pending = part4PendingTeamHeadApproval(inspection);
+                const p4Approved = part4ApprovedByTeamHead(inspection);
+                const p4Rejected = part4RejectedByTeamHead(inspection);
+                const p4RejectComment = getPart4TeamHeadRejectComment(inspection);
+                const canThApproveP4 = canUserApprovePart4(
+                  inspection,
+                  permissions.userId,
+                  permissions.userRole
+                );
+
+                if (p4Pending) {
+                  return (
+                    <div className="space-y-4">
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                        Part IV submitted — awaiting Team Head – QA approval.
+                      </div>
+                      <Part4Display inspection={inspection} />
+                      <div className="flex flex-wrap gap-2">
+                        {canThApproveP4 && (
+                          <>
+                            <Button
+                              variant="outline"
+                              className="border-amber-300 text-amber-900 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+                              onClick={() => {
+                                setPart4RejectComment('');
+                                setPart4RejectDialogOpen(true);
+                              }}
+                            >
+                              <XCircle className="mr-2 h-4 w-4" />
+                              Reject Part IV
+                            </Button>
+                            <Button onClick={() => handleWorkflowAction('approve_part4')}>
+                              <CheckCircle className="mr-2 h-4 w-4" />
+                              Approve Part IV
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
 
                 if (canEditPart4) {
-                  return <Part4Form inspection={inspection} onComplete={fetchInspection} />;
+                  return (
+                    <div className="space-y-4">
+                      {p4Rejected && p4RejectComment && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                          <p className="font-medium">Part IV rejected by Team Head – QA</p>
+                          <p className="mt-1 whitespace-pre-wrap text-amber-900/90 dark:text-amber-200/90">
+                            {p4RejectComment}
+                          </p>
+                          <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-300/90">
+                            Revise Part IV below, then submit again for Team Head – QA approval.
+                          </p>
+                        </div>
+                      )}
+                      <Part4Form
+                        inspection={inspection}
+                        onComplete={fetchInspection}
+                        onSuccess={(msg) => showMessage('success', msg)}
+                      />
+                    </div>
+                  );
                 }
                 if (inspection.part4_data) {
-                  return <Part4Display inspection={inspection} />;
+                  return (
+                    <div className="space-y-4">
+                      {p4Approved && (
+                        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
+                          Part IV approved by Team Head – QA.
+                        </div>
+                      )}
+                      <Part4Display inspection={inspection} />
+                    </div>
+                  );
                 }
                 if (blockedByPart3 && (isAssignedInspector || permissions.isAdmin())) {
                   return (
@@ -2658,6 +2809,23 @@ export default function InspectionDetailPage() {
                       <p className="font-medium">Complete Part IV first</p>
                       <p className="text-sm mt-1">
                         Sections 24–25 are filled after the R&amp;QA inspection report (Part IV) is saved.
+                      </p>
+                    </div>
+                  );
+                }
+
+                if (!part4ApprovedByTeamHead(inspection)) {
+                  return (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p className="font-medium">
+                        {part4PendingTeamHeadApproval(inspection)
+                          ? 'Awaiting Team Head – QA approval of Part IV'
+                          : 'Part IV must be approved before Part V'}
+                      </p>
+                      <p className="text-sm mt-1">
+                        {part4RejectedByTeamHead(inspection)
+                          ? 'Team Head – QA rejected Part IV. The R&QA Inspector must revise and resubmit.'
+                          : 'Team Head – QA must Approve Part IV before Sections 24–25 can be filled.'}
                       </p>
                     </div>
                   );
@@ -3825,10 +3993,12 @@ function Part2Step1Form({
 function Part2Step2Form({
   inspection,
   onComplete,
+  onSuccess,
   mode = 'assign',
 }: {
   inspection: InspectionRequest;
   onComplete: () => Promise<void> | void;
+  onSuccess?: (message: string) => void;
   mode?: 'assign' | 'edit';
 }) {
   const [users, setUsers] = useState<any[]>([]);
@@ -3875,6 +4045,7 @@ function Part2Step2Form({
   const handleSubmit = async () => {
     if (selectedInspectors.length === 0) return alert('Please select at least one Inspector / QA Rep');
     setLoading(true);
+    setSaveMsg('');
     try {
       const res = await fetch(`/api/inspection-requests/${inspection.id}/workflow`, {
         method: 'POST',
@@ -3885,14 +4056,30 @@ function Part2Step2Form({
         }),
       });
       const data = await res.json();
-      if (res.ok) { await onComplete(); setSaveMsg(data.message || 'Saved'); }
-      else setSaveMsg(data.error || 'Failed');
+      if (res.ok) {
+        // Show toast before refresh so it stays visible for both Assign and Save Assignment.
+        onSuccess?.('Assigned inspector saved');
+        await onComplete();
+        setSaveMsg('Assigned inspector saved');
+      } else {
+        setSaveMsg(data.error || 'Failed');
+      }
     } catch { setSaveMsg('Error saving'); } finally { setLoading(false); }
   };
 
   return (
     <div className="space-y-5">
-      {saveMsg && <div className="px-3 py-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-sm dark:bg-green-900/30 dark:border-green-800 dark:text-green-300">{saveMsg}</div>}
+      {saveMsg && (
+        <div
+          className={`px-3 py-2 rounded-md border text-sm ${
+            saveMsg === 'Assigned inspector saved'
+              ? 'bg-green-50 border-green-200 text-green-800 dark:bg-green-900/30 dark:border-green-800 dark:text-green-300'
+              : 'bg-red-50 border-red-200 text-red-800 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300'
+          }`}
+        >
+          {saveMsg}
+        </div>
+      )}
 
       <Separator />
       <h4 className="font-semibold text-sm text-muted-foreground">Assign Inspector / QA Rep(s) *</h4>
@@ -4264,10 +4451,12 @@ function Part3AssignForm({
   inspection,
   inspectionId,
   onComplete,
+  onSuccess,
 }: {
   inspection: InspectionRequest;
   inspectionId: number;
   onComplete: () => Promise<void> | void;
+  onSuccess?: (message: string) => void;
 }) {
   const { data: session } = useSession();
   const p0 = parseJsonObj(inspection.part3_data);
@@ -4282,11 +4471,14 @@ function Part3AssignForm({
     if (p0.delegation_type === 'assigned') return 'assigned';
     return null;
   });
-  const [assigneeUserId, setAssigneeUserId] = useState('');
+  const [assigneeUserId, setAssigneeUserId] = useState(
+    inspection.ordaqa_inspector_id != null ? String(inspection.ordaqa_inspector_id) : ''
+  );
   const [ordaqaInspectors, setOrdaqaInspectors] = useState<any[]>([]);
   const [qaUsers, setQaUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
+  const alreadySaved = part3Section23HasSavedData(inspection);
 
   const sel = "w-full px-3 py-2 text-sm rounded-md border border-input bg-background";
 
@@ -4299,6 +4491,26 @@ function Part3AssignForm({
       oic_ordaqa_name: prev.oic_ordaqa_name.trim() ? prev.oic_ordaqa_name : loggedInOicName,
     }));
   }, [loggedInOicName]);
+
+  useEffect(() => {
+    const p = parseJsonObj(inspection.part3_data);
+    setForm({
+      ordaqa_comments: (p.ordaqa_comments as string) || '',
+      received_date_time: (p.received_date_time as string) || getLocalDateTimeNow(),
+      memo_returned: (p.memo_returned as string) || 'no',
+      oic_ordaqa_name: (p.oic_ordaqa_name as string) || loggedInOicName,
+    });
+    setDelegationType(
+      p.delegation_type === 'delegated'
+        ? 'delegated'
+        : p.delegation_type === 'assigned'
+          ? 'assigned'
+          : null
+    );
+    setAssigneeUserId(
+      inspection.ordaqa_inspector_id != null ? String(inspection.ordaqa_inspector_id) : ''
+    );
+  }, [inspection.id, inspection.part3_data, inspection.ordaqa_inspector_id, loggedInOicName]);
 
   useEffect(() => {
     fetch('/api/users?role=ordaqa_inspector&status=active')
@@ -4379,8 +4591,9 @@ function Part3AssignForm({
       });
       const data = await res.json();
       if (res.ok) {
+        onSuccess?.(data.message || (alreadySaved ? 'Section 23 updated' : 'Section 23 saved'));
         await onComplete();
-        setSaveMsg(data.message || 'Saved');
+        setSaveMsg('');
       } else setSaveMsg(data.error || 'Failed');
     } catch {
       setSaveMsg('Error saving');
@@ -4544,7 +4757,13 @@ function Part3AssignForm({
         disabled={loading || !canSubmit}
         className="mt-1 bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
       >
-        {loading ? 'Saving...' : memoReturnYes ? 'Save & Return to QA Head' : 'Save Section 23 & Assign'}
+        {loading
+          ? 'Saving...'
+          : memoReturnYes
+            ? 'Save & Return to QA Head'
+            : alreadySaved
+              ? 'Save Section 23 updates'
+              : 'Save Section 23 & Assign'}
       </Button>
     </div>
   );
@@ -4653,7 +4872,9 @@ function Part5Form({
           action: 'save_part5',
           part5_data: {
             ...form,
-            inspection_remarks: remarks.filter(r => r.observation),
+            inspection_remarks: remarks
+              .filter((r) => r.observation)
+              .map((r) => normalizeRemarkWithChatId({ ...r })),
           },
         }),
       });
@@ -5036,7 +5257,15 @@ function Part4Display({ inspection }: { inspection: InspectionRequest }) {
   );
 }
 
-function Part4Form({ inspection, onComplete }: { inspection: InspectionRequest; onComplete: () => Promise<void> | void }) {
+function Part4Form({
+  inspection,
+  onComplete,
+  onSuccess,
+}: {
+  inspection: InspectionRequest;
+  onComplete: () => Promise<void> | void;
+  onSuccess?: (message: string) => void;
+}) {
   const { data: session } = useSession();
   const signerName = session?.user?.name?.trim() || '';
   const inspectionId = inspection.id;
@@ -5044,6 +5273,7 @@ function Part4Form({ inspection, onComplete }: { inspection: InspectionRequest; 
   const lastPart4SnapshotRef = useRef<string | null>(null);
   const { statusMap: threadStatus, refresh: refreshThreadStatus } = useObservationThreadStatus(inspectionId, true);
   const [locallyClosed, setLocallyClosed] = useState<Record<string, boolean>>({});
+  const [saveMsg, setSaveMsg] = useState('');
 
   const [form, setForm] = useState(() => buildPart4FormState(inspection));
 
@@ -5112,11 +5342,14 @@ function Part4Form({ inspection, onComplete }: { inspection: InspectionRequest; 
   const handleSubmit = async () => {
     if (!validatePart4()) return;
     setLoading(true);
+    setSaveMsg('');
     try {
-      const remarksWithSigner = form.part4_remarks.map((r) => ({
-        ...r,
-        signature: signerName || r.signature,
-      }));
+      const remarksWithSigner = form.part4_remarks.map((r) =>
+        normalizeRemarkWithChatId({
+          ...r,
+          signature: signerName || r.signature,
+        })
+      );
       let part4Payload: Record<string, unknown> = { ...form, part4_remarks: remarksWithSigner };
       if (form.logbook_copy_attached !== 'yes') {
         part4Payload.logbook_copy_attachment_id = null;
@@ -5152,19 +5385,27 @@ function Part4Form({ inspection, onComplete }: { inspection: InspectionRequest; 
       const data = await res.json();
       if (res.ok) {
         setLogbookCopyPart4File(null);
+        onSuccess?.(data.message || 'Part IV saved');
         await onComplete();
-        setSaveMsg(data.message || 'Saved');
-      } else setSaveMsg(data.error || 'Failed');
-    } catch { setSaveMsg('Error saving'); } finally { setLoading(false); }
+      } else {
+        setSaveMsg(data.error || 'Failed');
+      }
+    } catch {
+      setSaveMsg('Error saving');
+    } finally {
+      setLoading(false);
+    }
   };
-
-  const [saveMsg, setSaveMsg] = useState('');
 
   const sel = "w-full px-3 py-2 text-sm rounded-md border border-input bg-background";
 
   return (
     <div className="space-y-6">
-      {saveMsg && <div className="px-3 py-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-sm dark:bg-green-900/30 dark:border-green-800 dark:text-green-300">{saveMsg}</div>}
+      {saveMsg && (
+        <div className="px-3 py-2 rounded-md border text-sm bg-red-50 border-red-200 text-red-800 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
+          {saveMsg}
+        </div>
+      )}
       {/* Section 26 */}
       <h4 className="font-semibold text-sm text-muted-foreground">26. Details of Inspection / Test Completed</h4>
       <div className="space-y-2">
@@ -5470,10 +5711,12 @@ function Part4Form({ inspection, onComplete }: { inspection: InspectionRequest; 
 
       <Button onClick={handleSubmit} disabled={loading} className="mt-2">
         {loading
-          ? 'Saving...'
-          : inspectionPart4Saved(inspection)
-            ? 'Update Part IV — R&QA Inspection Report'
-            : 'Save Part IV — R&QA Inspection Report'}
+          ? 'Submitting...'
+          : part4RejectedByTeamHead(inspection)
+            ? 'Resubmit Part IV for Team Head Approval'
+            : inspectionPart4Saved(inspection)
+              ? 'Submit Part IV for Team Head Approval'
+              : 'Submit Part IV for Team Head Approval'}
       </Button>
     </div>
   );

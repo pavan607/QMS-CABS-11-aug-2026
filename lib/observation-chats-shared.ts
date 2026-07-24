@@ -9,6 +9,22 @@ export interface ObservationRemarkWithChat {
   chat_id?: string;
 }
 
+/** Roles that participate in Parts 1–5 and should see observation chats on the dashboard. */
+export const OBSERVATION_CHAT_VIEW_ROLES = [
+  'administrator',
+  'initiator',
+  'request_approver',
+  'qa_approver',
+  'qa_head',
+  'inspector',
+  'ordaqa_head',
+  'ordaqa_inspector',
+] as const;
+
+export function roleCanViewObservationChats(role: string): boolean {
+  return (OBSERVATION_CHAT_VIEW_ROLES as readonly string[]).includes(role);
+}
+
 export function generateObservationChatId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();

@@ -286,7 +286,7 @@ export default function PrintInspectionReport() {
           <tbody>
             <tr>
               <td className="sno">18</td>
-              <td colSpan={4} style={{ fontWeight: 600 }}>The available Document Details (Approved Document Number is to be filled)</td>
+              <td colSpan={4} style={{ fontWeight: 600 }}>The available Document Details</td>
             </tr>
           </tbody>
         </table>

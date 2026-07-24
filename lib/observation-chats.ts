@@ -1,13 +1,26 @@
 import { query } from '@/lib/db';
 import {
+  collectInspectorIds,
+  sqlInspectionScopeCondition,
   userCanAccessInspectionRequest,
+  userHasGlobalInspectionAccess,
   type InspectionRequestScopeRow,
 } from '@/lib/inspection-access';
 import type { ObservationPart } from '@/lib/observation-chats-shared';
+import {
+  generateObservationChatId,
+  normalizeRemarkWithChatId,
+  OBSERVATION_CHAT_VIEW_ROLES,
+  roleCanViewObservationChats,
+} from '@/lib/observation-chats-shared';
 
 export type { ObservationPart } from '@/lib/observation-chats-shared';
-export { generateObservationChatId, normalizeRemarkWithChatId } from '@/lib/observation-chats-shared';
-
+export {
+  generateObservationChatId,
+  normalizeRemarkWithChatId,
+  OBSERVATION_CHAT_VIEW_ROLES,
+  roleCanViewObservationChats,
+};
 export interface ObservationThreadRow {
   id: number;
   inspection_request_id: number;
@@ -28,8 +41,19 @@ export interface ObservationMessageRow {
   sender_id: number;
   sender_name?: string;
   message: string;
+  attachment_file_name?: string | null;
+  attachment_file_path?: string | null;
+  attachment_file_type?: string | null;
+  attachment_file_size?: number | null;
   created_at: string;
 }
+
+export type ObservationMessageAttachment = {
+  file_name: string;
+  file_path: string;
+  file_type: string;
+  file_size: number;
+};
 
 let tablesEnsured = false;
 
@@ -80,6 +104,22 @@ export async function ensureObservationChatTables(): Promise<void> {
       PRIMARY KEY (thread_id, user_id)
     )
   `);
+  await query(`
+    ALTER TABLE observation_messages
+    ADD COLUMN IF NOT EXISTS attachment_file_name TEXT
+  `);
+  await query(`
+    ALTER TABLE observation_messages
+    ADD COLUMN IF NOT EXISTS attachment_file_path TEXT
+  `);
+  await query(`
+    ALTER TABLE observation_messages
+    ADD COLUMN IF NOT EXISTS attachment_file_type TEXT
+  `);
+  await query(`
+    ALTER TABLE observation_messages
+    ADD COLUMN IF NOT EXISTS attachment_file_size INTEGER
+  `);
   tablesEnsured = true;
 }
 
@@ -109,14 +149,28 @@ export async function fetchInspectionForChatAccess(
 export async function canAccessObservationChat(
   userId: number,
   userRole: string,
+  ir: InspectionRequestScopeRow,
+  employeeId?: string | null
+): Promise<boolean> {
+  if (!roleCanViewObservationChats(userRole) && !userHasGlobalInspectionAccess(userRole, employeeId)) {
+    return false;
+  }
+  return userCanAccessInspectionRequest(userRole, userId, ir, employeeId);
+}
+
+/**
+ * Only the IR initiator and the Part IV/V inspectors may reply.
+ * Other involved users (approvers, heads, etc.) are read-only.
+ */
+export async function canReplyObservationChat(
+  userId: number,
+  userRole: string,
+  part: ObservationPart,
   ir: InspectionRequestScopeRow
 ): Promise<boolean> {
   if (userRole === 'administrator') return true;
   if (ir.initiator_id != null && Number(ir.initiator_id) === userId) return true;
-  if (userRole === 'inspector' || userRole === 'ordaqa_inspector') {
-    return userCanAccessInspectionRequest(userRole, userId, ir);
-  }
-  return false;
+  return canCloseObservationChat(userId, userRole, part, ir);
 }
 
 export async function canCloseObservationChat(
@@ -136,6 +190,29 @@ export async function canCloseObservationChat(
     );
   }
   return false;
+}
+
+/** Stakeholder user ids who should see/be notified about observation activity on an IR. */
+export function collectObservationStakeholderIds(
+  ir: InspectionRequestScopeRow,
+  excludeUserId?: number
+): number[] {
+  const ids = new Set<number>();
+  const add = (uid: unknown) => {
+    const n = uid != null ? Number(uid) : NaN;
+    if (Number.isFinite(n) && n > 0 && n !== excludeUserId) ids.add(n);
+  };
+
+  add(ir.initiator_id);
+  add(ir.request_approver_id);
+  add(ir.nominated_request_approver_id);
+  add(ir.nominated_team_head_id);
+  add(ir.final_qa_approver_id);
+  add(ir.inspector_id);
+  add(ir.ordaqa_inspector_id);
+  for (const id of collectInspectorIds(ir)) add(id);
+
+  return [...ids];
 }
 
 export async function ensureObservationThread(params: {
@@ -199,26 +276,41 @@ export async function listObservationThreadsForUser(
 > {
   await ensureObservationChatTables();
 
-  let scopeSql = '';
-  const params: unknown[] = [userId];
+  if (!roleCanViewObservationChats(userRole) && !userHasGlobalInspectionAccess(userRole)) {
+    return [];
+  }
 
-  if (userRole === 'administrator') {
+  const params: unknown[] = [userId];
+  let scopeSql = 'TRUE';
+
+  if (userHasGlobalInspectionAccess(userRole) || userRole === 'administrator') {
     scopeSql = 'TRUE';
-  } else if (userRole === 'initiator') {
-    scopeSql = `ir.initiator_id = $1`;
-  } else if (userRole === 'inspector') {
+  } else if (userRole === 'request_approver') {
     scopeSql = `(
-      ir.inspector_id = $1
-      OR ir.ordaqa_inspector_id = $1
-      OR EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(COALESCE(ir.inspector_ids, '[]')::jsonb) elem
-        WHERE elem::int = $1
+      ir.nominated_request_approver_id = $1
+      OR ir.request_approver_id = $1
+      OR (
+        ir.nominated_request_approver_id IS NULL
+        AND ir.initiator_id IN (
+          WITH RECURSIVE team AS (
+            SELECT id FROM users WHERE reporting_to = $1
+            UNION ALL
+            SELECT u.id FROM users u INNER JOIN team t ON u.reporting_to = t.id
+          )
+          SELECT id FROM team
+        )
       )
     )`;
-  } else if (userRole === 'ordaqa_inspector') {
-    scopeSql = `ir.ordaqa_inspector_id = $1`;
+  } else if (userRole === 'qa_head') {
+    const cond = sqlInspectionScopeCondition('qa_head', 'ir', '$1');
+    scopeSql = cond || 'FALSE';
+  } else if (userRole === 'ordaqa_head') {
+    const cond = sqlInspectionScopeCondition('ordaqa_head', 'ir', '$1');
+    scopeSql = cond || 'FALSE';
   } else {
-    return [];
+    const cond = sqlInspectionScopeCondition(userRole, 'ir', '$1');
+    if (!cond) return [];
+    scopeSql = cond;
   }
 
   const excludeClosed = options?.excludeClosed === true;
@@ -299,21 +391,33 @@ export async function acknowledgeObservationThread(threadId: number, userId: num
 export async function sendObservationMessage(
   threadId: number,
   senderId: number,
-  message: string
+  message: string,
+  attachment?: ObservationMessageAttachment | null
 ): Promise<ObservationMessageRow> {
   await ensureObservationChatTables();
   const trimmed = message.trim();
-  if (!trimmed) throw new Error('Message cannot be empty');
+  if (!trimmed && !attachment) throw new Error('Message or attachment is required');
 
   const thread = await getObservationThreadById(threadId);
   if (!thread) throw new Error('Thread not found');
   if (thread.is_closed) throw new Error('This observation is closed — chat is no longer available');
 
   const result = await query(
-    `INSERT INTO observation_messages (thread_id, sender_id, message)
-     VALUES ($1, $2, $3)
+    `INSERT INTO observation_messages (
+       thread_id, sender_id, message,
+       attachment_file_name, attachment_file_path, attachment_file_type, attachment_file_size
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [threadId, senderId, trimmed]
+    [
+      threadId,
+      senderId,
+      trimmed || (attachment ? `[Attachment] ${attachment.file_name}` : ''),
+      attachment?.file_name ?? null,
+      attachment?.file_path ?? null,
+      attachment?.file_type ?? null,
+      attachment?.file_size ?? null,
+    ]
   );
   const row = result.rows[0];
   const sender = await query(`SELECT name FROM users WHERE id = $1`, [senderId]);
@@ -324,12 +428,14 @@ export async function syncObservationThreadsFromRemarks(
   inspectionRequestId: number,
   part: ObservationPart,
   remarks: unknown
-): Promise<void> {
-  if (!Array.isArray(remarks)) return;
+): Promise<Array<Record<string, unknown>>> {
+  if (!Array.isArray(remarks)) return [];
   await ensureObservationChatTables();
+  const normalized: Array<Record<string, unknown>> = [];
   for (const raw of remarks) {
     if (!raw || typeof raw !== 'object') continue;
-    const row = raw as Record<string, unknown>;
+    const row = normalizeRemarkWithChatId({ ...(raw as Record<string, unknown>) });
+    normalized.push(row);
     const obs = String(row.observation ?? '').trim();
     const key = String(row.chat_id ?? '').trim();
     if (!obs || !key) continue;
@@ -340,6 +446,7 @@ export async function syncObservationThreadsFromRemarks(
       observationPreview: obs,
     });
   }
+  return normalized;
 }
 
 export function formatObservationSendMessage(observation: string, actionRequired: string): string {
@@ -355,14 +462,13 @@ export async function sendObservationToInitiator(params: {
   part: ObservationPart;
   observationKey: string;
   observation: string;
-  actionRequired: string;
+  actionRequired?: string;
   senderId: number;
-}): Promise<{ thread: ObservationThreadRow; message: ObservationMessageRow }> {
-  const { inspectionRequestId, part, observationKey, observation, actionRequired, senderId } = params;
+}): Promise<{ thread: ObservationThreadRow; message: ObservationMessageRow; alreadySent: boolean }> {
+  const { inspectionRequestId, part, observationKey, observation, actionRequired = '', senderId } = params;
   const obs = observation.trim();
   const action = actionRequired.trim();
   if (!obs) throw new Error('Observation text is required');
-  if (!action) throw new Error('Action required must be filled before sending');
 
   const thread = await ensureObservationThread({
     inspectionRequestId,
@@ -375,7 +481,18 @@ export async function sendObservationToInitiator(params: {
     throw new Error('This observation is closed — cannot send to initiator');
   }
   if (thread.sent_to_initiator_at) {
-    throw new Error('This observation was already sent to the initiator');
+    const messages = await getObservationMessages(thread.id);
+    return {
+      thread,
+      message: messages[0] || {
+        id: 0,
+        thread_id: thread.id,
+        sender_id: senderId,
+        message: '',
+        created_at: thread.sent_to_initiator_at,
+      },
+      alreadySent: true,
+    };
   }
 
   const messageText = formatObservationSendMessage(obs, action);
@@ -389,7 +506,52 @@ export async function sendObservationToInitiator(params: {
     [thread.id, senderId]
   );
 
-  return { thread: updated.rows[0] || thread, message };
+  return { thread: updated.rows[0] || thread, message, alreadySent: false };
+}
+
+/**
+ * After Part IV / Part V is saved, sync threads and auto-send every remark that has observation text.
+ * Ensures each remark has a chat_id (generates one if missing).
+ * Returns newly sent threads (skips already-sent / closed) and the normalized remarks array.
+ */
+export async function autoSendObservationsFromRemarks(params: {
+  inspectionRequestId: number;
+  part: ObservationPart;
+  remarks: unknown;
+  senderId: number;
+}): Promise<{
+  sent: Array<{ thread: ObservationThreadRow; observation: string; actionRequired: string }>;
+  remarks: Array<Record<string, unknown>>;
+}> {
+  const { inspectionRequestId, part, remarks, senderId } = params;
+  if (!Array.isArray(remarks)) return { sent: [], remarks: [] };
+
+  const normalized = await syncObservationThreadsFromRemarks(inspectionRequestId, part, remarks);
+
+  const sent: Array<{ thread: ObservationThreadRow; observation: string; actionRequired: string }> = [];
+  for (const row of normalized) {
+    const observation = String(row.observation ?? '').trim();
+    const observationKey = String(row.chat_id ?? '').trim();
+    const actionRequired = String(row.action_required ?? '').trim();
+    if (!observation || !observationKey) continue;
+
+    try {
+      const result = await sendObservationToInitiator({
+        inspectionRequestId,
+        part,
+        observationKey,
+        observation,
+        actionRequired,
+        senderId,
+      });
+      if (!result.alreadySent) {
+        sent.push({ thread: result.thread, observation, actionRequired });
+      }
+    } catch (e) {
+      console.error('Auto-send observation failed:', observationKey, e);
+    }
+  }
+  return { sent, remarks: normalized };
 }
 
 export async function closeObservationThread(

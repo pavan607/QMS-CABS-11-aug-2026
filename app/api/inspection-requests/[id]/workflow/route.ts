@@ -12,8 +12,12 @@ import {
   notifyOrdaqaHeadsForwardedToOrdaqa,
   notifyQaHeadsMemoReturnedFromOrdaqa,
   notifyInspectorsAssignedPart2,
+  notifyInspectorsReassignedPart2,
   notifyPart2InspectorsPart3Completed,
   notifyStakeholdersPart4Saved,
+  notifyTeamHeadPart4PendingApproval,
+  notifyInspectorsPart4Rejected,
+  notifyInspectorsPart4Approved,
   notifyOrdaqaAssigneePart4ForwardedForPart5,
   notifyOrdaqaHeadsPart5PendingApproval,
   notifyOrdaqaAssigneePart5SentBack,
@@ -25,10 +29,17 @@ import {
   notifyInspectionClosed,
   createBulkNotifications,
 } from '@/lib/notifications';
-import { syncObservationThreadsFromRemarks } from '@/lib/observation-chats';
+import {
+  autoSendObservationsFromRemarks,
+  collectObservationStakeholderIds,
+  fetchInspectionForChatAccess,
+  normalizeRemarkWithChatId,
+} from '@/lib/observation-chats';
 import {
   canUserApproveOrdqaPart5,
   canUserOrdqaHeadPart5SendBack,
+  canUserApprovePart4,
+  canUserRejectPart4,
   canUserCompleteInspection,
   canUserStartInspection,
   inspectionReadyToStart,
@@ -41,7 +52,10 @@ import {
   ordqaPart5Completed,
   ordqaPart5Submitted,
   part3Section23EditableStatus,
+  part4ApprovedByTeamHead,
   part4BlockedByPart3,
+  part4PendingTeamHeadApproval,
+  getPart4TeamHeadApprovalStatusRaw,
 } from '@/lib/inspection-display';
 import {
   userCanAccessInspectionRequest,
@@ -127,6 +141,20 @@ function hasPart4Saved(ir: { part4_data?: unknown }): boolean {
   if (typeof p === 'string') return p.trim() !== '' && p !== '{}';
   if (typeof p === 'object') return Object.keys(p as object).length > 0;
   return false;
+}
+
+function parsePart4Data(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try {
+      const o = JSON.parse(raw);
+      return typeof o === 'object' && o !== null && !Array.isArray(o) ? (o as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 function isNominatedTeamHeadActor(ir: { nominated_team_head_id?: unknown }, actorUserId: number): boolean {
@@ -655,6 +683,7 @@ export async function POST(
           return NextResponse.json({ error: 'QA Head must complete Part II Step 1 first' }, { status: 400 });
         }
         const alreadyAssigned = hasInspectorsAssigned(ir);
+        const previousInspectorIds = collectInspectorIds(ir);
         const allowedStatuses = alreadyAssigned
           ? ['assigned', 'in_progress']
           : ['request_approved'];
@@ -713,13 +742,24 @@ export async function POST(
         try {
           const teamHeadName =
             (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
-          await notifyInspectorsAssignedPart2(
-            parseInt(id, 10),
-            String(ir.request_number),
-            inspectorIds,
-            ir.initiator_id,
-            teamHeadName
-          );
+          if (alreadyAssigned) {
+            await notifyInspectorsReassignedPart2(
+              parseInt(id, 10),
+              String(ir.request_number),
+              previousInspectorIds,
+              inspectorIds,
+              ir.initiator_id,
+              teamHeadName
+            );
+          } else {
+            await notifyInspectorsAssignedPart2(
+              parseInt(id, 10),
+              String(ir.request_number),
+              inspectorIds,
+              ir.initiator_id,
+              teamHeadName
+            );
+          }
         } catch (e) {
           console.error('Part II inspector assignment notifications:', e);
         }
@@ -1165,6 +1205,16 @@ export async function POST(
             { status: 400 }
           );
         }
+        if (!part4ApprovedByTeamHead(ir)) {
+          return NextResponse.json(
+            {
+              error: part4PendingTeamHeadApproval(ir)
+                ? 'Part IV is awaiting Team Head – QA approval before Part V can be filled'
+                : 'Part IV must be approved by Team Head – QA before Part V can be filled',
+            },
+            { status: 400 }
+          );
+        }
         if (userRole === 'administrator') {
           // admin can always fill
         } else if (sameUserId(ir.ordaqa_inspector_id, userId)) {
@@ -1197,6 +1247,13 @@ export async function POST(
         delete merged.part5_head_send_back_comment;
         delete merged.part5_head_send_back_at;
         delete merged.part5_head_send_back_by;
+        if (Array.isArray(merged.inspection_remarks)) {
+          merged.inspection_remarks = (merged.inspection_remarks as unknown[]).map((r) =>
+            r && typeof r === 'object'
+              ? normalizeRemarkWithChatId({ ...(r as Record<string, unknown>) })
+              : r
+          );
+        }
         await query(
           `UPDATE inspection_requests 
            SET part3_data = $2, part3_completed_by = $3, part3_date = NOW(), updated_at = NOW() 
@@ -1205,13 +1262,33 @@ export async function POST(
         );
         await logActivity(id, 'part5_saved', 'Part V — ORDAQA Sections 24–25 saved (in part3_data)', userId);
         try {
-          await syncObservationThreadsFromRemarks(
-            parseInt(id, 10),
-            'part5',
-            (merged.inspection_remarks as unknown) ?? []
-          );
+          const { sent } = await autoSendObservationsFromRemarks({
+            inspectionRequestId: parseInt(id, 10),
+            part: 'part5',
+            remarks: (merged.inspection_remarks as unknown) ?? [],
+            senderId: userId,
+          });
+          if (sent.length > 0) {
+            const irFresh = await fetchInspectionForChatAccess(parseInt(id, 10));
+            const recipients = collectObservationStakeholderIds(irFresh || ir, userId);
+            const senderName = (session.user as { name?: string })?.name?.trim() || 'DGAQA Inspector';
+            await Promise.all(
+              sent.flatMap(({ thread, observation }) =>
+                recipients.map((recipientId) =>
+                  createNotification({
+                    userId: recipientId,
+                    title: `Observation sent — ${ir.request_number || 'IR'}`,
+                    message: `${senderName} submitted a Part V observation: ${observation.slice(0, 120)}${observation.length > 120 ? '…' : ''}`,
+                    type: 'info',
+                    entityType: 'observation_thread',
+                    entityId: thread.id,
+                  }).catch(() => {})
+                )
+              )
+            );
+          }
         } catch (e) {
-          console.error('Observation thread sync (Part V):', e);
+          console.error('Observation auto-send (Part V):', e);
         }
         try {
           await notifyOrdaqaHeadsPart5PendingApproval(parseInt(id, 10), String(ir.request_number));
@@ -1227,6 +1304,18 @@ export async function POST(
         if (ordqaPart5Completed(ir)) {
           return NextResponse.json(
             { error: 'Part IV cannot be edited after Part V (ORDAQA Sections 24–25) is completed' },
+            { status: 400 }
+          );
+        }
+        if (part4PendingTeamHeadApproval(ir)) {
+          return NextResponse.json(
+            { error: 'Part IV is awaiting Team Head – QA approval and cannot be edited' },
+            { status: 400 }
+          );
+        }
+        if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') {
+          return NextResponse.json(
+            { error: 'Part IV has been approved by Team Head – QA and cannot be edited' },
             { status: 400 }
           );
         }
@@ -1266,7 +1355,39 @@ export async function POST(
             { status: 400 }
           );
         }
-        const { part4_data: p4data } = body;
+        const { part4_data: p4dataRaw } = body;
+        const p4Incoming =
+          p4dataRaw && typeof p4dataRaw === 'object' && !Array.isArray(p4dataRaw)
+            ? { ...(p4dataRaw as Record<string, unknown>) }
+            : {};
+        // Server owns approval metadata — strip any client-supplied approval fields.
+        delete p4Incoming.team_head_approval_status;
+        delete p4Incoming.part4_team_head_reject_comment;
+        delete p4Incoming.part4_team_head_rejected_at;
+        delete p4Incoming.part4_team_head_rejected_by;
+        delete p4Incoming.part4_team_head_approver_id;
+        delete p4Incoming.part4_team_head_approved_at;
+        delete p4Incoming.part4_return_history;
+
+        const existingP4 = parsePart4Data(ir.part4_data);
+        const prevHistory = Array.isArray(existingP4.part4_return_history)
+          ? (existingP4.part4_return_history as unknown[])
+          : [];
+        const incomingRemarks = Array.isArray(p4Incoming.part4_remarks)
+          ? (p4Incoming.part4_remarks as unknown[])
+          : [];
+        const normalizedRemarks = incomingRemarks.map((r) =>
+          r && typeof r === 'object'
+            ? normalizeRemarkWithChatId({ ...(r as Record<string, unknown>) })
+            : r
+        );
+        const p4data: Record<string, unknown> = {
+          ...p4Incoming,
+          part4_remarks: normalizedRemarks,
+          team_head_approval_status: 'pending',
+          part4_return_history: prevHistory,
+        };
+
         if (skipPart23 && ir.status === 'request_approved') {
           await query(
             `UPDATE inspection_requests
@@ -1288,23 +1409,56 @@ export async function POST(
             [id, JSON.stringify(p4data), userId]
           );
         }
-        await logActivity(id, 'part4_saved', 'Part IV — R&QA Inspection Report saved', userId);
+        await logActivity(
+          id,
+          'part4_saved',
+          'Part IV — R&QA Inspection Report submitted for Team Head – QA approval',
+          userId
+        );
         try {
-          await syncObservationThreadsFromRemarks(
-            parseInt(id, 10),
-            'part4',
-            (p4data as { part4_remarks?: unknown })?.part4_remarks ?? []
-          );
+          const { sent } = await autoSendObservationsFromRemarks({
+            inspectionRequestId: parseInt(id, 10),
+            part: 'part4',
+            remarks: (p4data as { part4_remarks?: unknown })?.part4_remarks ?? [],
+            senderId: userId,
+          });
+          if (sent.length > 0) {
+            const irFresh = await fetchInspectionForChatAccess(parseInt(id, 10));
+            const recipients = collectObservationStakeholderIds(irFresh || ir, userId);
+            const senderName = (session.user as { name?: string })?.name?.trim() || 'R&QA Inspector';
+            await Promise.all(
+              sent.flatMap(({ thread, observation }) =>
+                recipients.map((recipientId) =>
+                  createNotification({
+                    userId: recipientId,
+                    title: `Observation sent — ${ir.request_number || 'IR'}`,
+                    message: `${senderName} submitted a Part IV observation: ${observation.slice(0, 120)}${observation.length > 120 ? '…' : ''}`,
+                    type: 'info',
+                    entityType: 'observation_thread',
+                    entityId: thread.id,
+                  }).catch(() => {})
+                )
+              )
+            );
+          }
         } catch (e) {
-          console.error('Observation thread sync (Part IV):', e);
+          console.error('Observation auto-send (Part IV):', e);
         }
         try {
           const part4Ctx = {
             initiator_id: ir.initiator_id != null ? Number(ir.initiator_id) : null,
             nominated_team_head_id:
               ir.nominated_team_head_id != null ? Number(ir.nominated_team_head_id) : null,
-            inspector_id: ir.inspector_id != null ? Number(ir.inspector_id) : null,
+            inspector_id:
+              skipPart23 && ir.status === 'request_approved'
+                ? userId
+                : ir.inspector_id != null
+                  ? Number(ir.inspector_id)
+                  : null,
             inspector_ids_raw: (() => {
+              if (skipPart23 && ir.status === 'request_approved') {
+                return JSON.stringify([userId]);
+              }
               const v = ir.inspector_ids as unknown;
               if (v == null) return null;
               if (typeof v === 'string') return v;
@@ -1324,19 +1478,164 @@ export async function POST(
             userId,
             part4Ctx
           );
-          if (part4Ctx.forwarded_to_ordaqa && part4Ctx.ordaqa_inspector_id) {
-            const inspectorName = (session.user as { name?: string })?.name?.trim() || '';
-            await notifyOrdaqaAssigneePart4ForwardedForPart5(
-              parseInt(id, 10),
-              String(ir.request_number),
-              part4Ctx.ordaqa_inspector_id,
-              inspectorName
-            );
-          }
+          await notifyTeamHeadPart4PendingApproval(
+            parseInt(id, 10),
+            String(ir.request_number),
+            part4Ctx.nominated_team_head_id,
+            skipPart23
+          );
+          // ORDAQA Part V is notified only after Team Head approves Part IV (see approve_part4).
         } catch (e) {
           console.error('Part IV saved notifications:', e);
         }
-        return NextResponse.json({ message: 'Part IV saved' });
+        return NextResponse.json({
+          message: 'Part IV submitted — awaiting Team Head – QA approval',
+        });
+      }
+
+      case 'approve_part4': {
+        if (!canUserApprovePart4(ir, userId, userRole)) {
+          return NextResponse.json(
+            { error: 'Only Team Head – QA can approve Part IV while it is pending approval' },
+            { status: 403 }
+          );
+        }
+        if (userRole === 'qa_approver') {
+          if (inspectionSkipsPart2Part3(ir)) {
+            if (!(await isEligibleRqaTeamHead(userId))) {
+              return NextResponse.json(
+                {
+                  error:
+                    'Only an active R&QA Team Head (qa_approver, TH designation) can approve Part IV when joint inspection was not requested',
+                },
+                { status: 403 }
+              );
+            }
+          } else if (!isNominatedTeamHeadActor(ir, userId)) {
+            return NextResponse.json(
+              { error: 'Only the nominated Team Head – QA can approve Part IV' },
+              { status: 403 }
+            );
+          }
+        }
+        const existingP4Approve = parsePart4Data(ir.part4_data);
+        const mergedP4Approve: Record<string, unknown> = {
+          ...existingP4Approve,
+          team_head_approval_status: 'approved',
+          part4_team_head_approver_id: userId,
+          part4_team_head_approved_at: new Date().toISOString(),
+        };
+        delete mergedP4Approve.part4_team_head_reject_comment;
+        delete mergedP4Approve.part4_team_head_rejected_at;
+        delete mergedP4Approve.part4_team_head_rejected_by;
+        await query(
+          `UPDATE inspection_requests SET part4_data = $2, updated_at = NOW() WHERE id = $1`,
+          [id, JSON.stringify(mergedP4Approve)]
+        );
+        await logActivity(id, 'part4_team_head_approved', 'Part IV approved by Team Head – QA', userId);
+        const thName = (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
+        try {
+          await notifyInspectorsPart4Approved(
+            parseInt(id, 10),
+            String(ir.request_number),
+            collectInspectorIds(ir),
+            thName
+          );
+          if (isForwardedToOrdqa(ir) && ir.ordaqa_inspector_id) {
+            await notifyOrdaqaAssigneePart4ForwardedForPart5(
+              parseInt(id, 10),
+              String(ir.request_number),
+              Number(ir.ordaqa_inspector_id),
+              thName
+            );
+          }
+        } catch (e) {
+          console.error('Part IV approved notifications:', e);
+        }
+        return NextResponse.json({ message: 'Part IV approved by Team Head – QA' });
+      }
+
+      case 'reject_part4': {
+        if (!canUserRejectPart4(ir, userId, userRole)) {
+          return NextResponse.json(
+            { error: 'Only Team Head – QA can reject Part IV while it is pending approval' },
+            { status: 403 }
+          );
+        }
+        if (userRole === 'qa_approver') {
+          if (inspectionSkipsPart2Part3(ir)) {
+            if (!(await isEligibleRqaTeamHead(userId))) {
+              return NextResponse.json(
+                {
+                  error:
+                    'Only an active R&QA Team Head (qa_approver, TH designation) can reject Part IV when joint inspection was not requested',
+                },
+                { status: 403 }
+              );
+            }
+          } else if (!isNominatedTeamHeadActor(ir, userId)) {
+            return NextResponse.json(
+              { error: 'Only the nominated Team Head – QA can reject Part IV' },
+              { status: 403 }
+            );
+          }
+        }
+        const { comments } = body as { comments?: string };
+        const trimmedP4Reject = typeof comments === 'string' ? comments.trim() : '';
+        if (!trimmedP4Reject) {
+          return NextResponse.json(
+            { error: 'Comment is required to reject Part IV' },
+            { status: 400 }
+          );
+        }
+        const existingP4Reject = parsePart4Data(ir.part4_data);
+        const prevP4History = Array.isArray(existingP4Reject.part4_return_history)
+          ? (existingP4Reject.part4_return_history as unknown[])
+          : [];
+        const mergedP4Reject: Record<string, unknown> = {
+          ...existingP4Reject,
+          team_head_approval_status: 'rejected',
+          part4_team_head_reject_comment: trimmedP4Reject,
+          part4_team_head_rejected_at: new Date().toISOString(),
+          part4_team_head_rejected_by: userId,
+          part4_return_history: [
+            ...prevP4History,
+            {
+              at: new Date().toISOString(),
+              by_user_id: userId,
+              role: 'reject_part4',
+              comments: trimmedP4Reject,
+            },
+          ],
+        };
+        delete mergedP4Reject.part4_team_head_approver_id;
+        delete mergedP4Reject.part4_team_head_approved_at;
+        await query(
+          `UPDATE inspection_requests SET part4_data = $2, updated_at = NOW() WHERE id = $1`,
+          [id, JSON.stringify(mergedP4Reject)]
+        );
+        await logActivity(
+          id,
+          'part4_team_head_rejected',
+          `Team Head – QA rejected Part IV: ${trimmedP4Reject.slice(0, 200)}${trimmedP4Reject.length > 200 ? '…' : ''}`,
+          userId
+        );
+        const thRejectName = (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
+        try {
+          await notifyInspectorsPart4Rejected(
+            parseInt(id, 10),
+            String(ir.request_number),
+            collectInspectorIds(ir),
+            thRejectName,
+            trimmedP4Reject
+          );
+        } catch (e) {
+          console.error('Part IV rejected notifications:', e);
+        }
+        return NextResponse.json({
+          message:
+            'Part IV rejected and sent back to R&QA Inspector. They can update Part IV and resubmit for approval.',
+        });
       }
 
       case 'start_inspection': {

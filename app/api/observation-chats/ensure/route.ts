@@ -4,6 +4,8 @@ import {
   ensureObservationThread,
   fetchInspectionForChatAccess,
   canAccessObservationChat,
+  canReplyObservationChat,
+  canCloseObservationChat,
   type ObservationPart,
 } from '@/lib/observation-chats';
 
@@ -16,6 +18,7 @@ export async function POST(request: NextRequest) {
 
     const userId = parseInt((session.user as { id?: string }).id || '0', 10);
     const userRole = (session.user as { role?: string }).role || 'initiator';
+    const employeeId = (session.user as { employee_id?: string }).employee_id;
     const body = await request.json();
 
     const inspectionRequestId = parseInt(String(body.inspection_request_id || ''), 10);
@@ -38,7 +41,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Inspection request not found' }, { status: 404 });
     }
 
-    const allowed = await canAccessObservationChat(userId, userRole, ir);
+    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId);
     if (!allowed) {
       return NextResponse.json({ error: 'You do not have access to this observation chat' }, { status: 403 });
     }
@@ -50,7 +53,10 @@ export async function POST(request: NextRequest) {
       observationPreview,
     });
 
-    return NextResponse.json({ thread });
+    const canReply = await canReplyObservationChat(userId, userRole, part, ir);
+    const canClose = await canCloseObservationChat(userId, userRole, part, ir);
+
+    return NextResponse.json({ thread, can_reply: canReply, can_close: canClose });
   } catch (error) {
     console.error('Error ensuring observation thread:', error);
     return NextResponse.json({ error: 'Failed to open observation chat' }, { status: 500 });

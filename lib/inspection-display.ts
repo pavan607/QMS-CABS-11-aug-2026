@@ -869,16 +869,13 @@ export function part3Section23HasSavedData(ir: {
   );
 }
 
-/** ORDAQA Head may complete Section 23 after forward, before assignee is locked in. */
+/** ORDAQA Head / admin may complete or update Section 23 while IR is forwarded and status allows. */
 export function canEditPart3Section23(ir: {
   forwarded_to_ordaqa?: boolean | null;
   status?: string;
   ordaqa_inspector_id?: number | null;
 }): boolean {
   if (!isForwardedToOrdqa(ir)) return false;
-  if (ir.ordaqa_inspector_id != null && String(ir.ordaqa_inspector_id).trim() !== '') {
-    return false;
-  }
   return part3Section23EditableStatus(ir.status);
 }
 
@@ -947,7 +944,80 @@ export function part4BlockedByPart3(ir: {
   return part3RequiredBeforePart4(ir) && !part3CompleteForOrdqaWorkflow(ir);
 }
 
-/** Part IV (R&QA report) — editable only while assigned (before Start Inspection); locked after Part V when ORDAQA path applies. */
+/** Part IV Team Head – QA approval status stored in `part4_data.team_head_approval_status`. */
+export type Part4TeamHeadApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export function getPart4TeamHeadApprovalStatusRaw(
+  ir: { part4_data?: unknown }
+): Part4TeamHeadApprovalStatus | null {
+  const p = parseJsonRecord(ir.part4_data);
+  const s = p.team_head_approval_status;
+  if (s === 'pending' || s === 'approved' || s === 'rejected') return s;
+  return null;
+}
+
+/** Part IV submitted and awaiting Team Head – QA approve/reject. */
+export function part4PendingTeamHeadApproval(ir: { part4_data?: unknown }): boolean {
+  return getPart4TeamHeadApprovalStatusRaw(ir) === 'pending';
+}
+
+/**
+ * Part IV approved by Team Head – QA.
+ * Legacy rows (saved before this gate) with no status field are treated as approved
+ * so in-flight IRs are not blocked from Start / Part V.
+ */
+export function part4ApprovedByTeamHead(ir: { part4_data?: unknown }): boolean {
+  if (!inspectionPart4Saved(ir)) return false;
+  const s = getPart4TeamHeadApprovalStatusRaw(ir);
+  if (s == null) return true;
+  return s === 'approved';
+}
+
+/** Team Head – QA rejected Part IV (with comments) — inspector may revise and resubmit. */
+export function part4RejectedByTeamHead(ir: { part4_data?: unknown }): boolean {
+  return getPart4TeamHeadApprovalStatusRaw(ir) === 'rejected';
+}
+
+export function getPart4TeamHeadRejectComment(ir: { part4_data?: unknown }): string | null {
+  const p = parseJsonRecord(ir.part4_data);
+  const c = p.part4_team_head_reject_comment;
+  if (c == null || !String(c).trim()) return null;
+  return String(c).trim();
+}
+
+/**
+ * Team Head – QA (or admin) may approve/reject Part IV while it is pending.
+ * Skip-path: any `qa_approver`. Nominated path: nominated Team Head – QA only.
+ */
+export function canUserApprovePart4(
+  ir: {
+    status?: string;
+    confirmations?: unknown;
+    nominated_team_head_id?: number | null;
+    part4_data?: unknown;
+  },
+  userId: number,
+  userRole?: string
+): boolean {
+  if (!part4PendingTeamHeadApproval(ir)) return false;
+  if (ir.status !== 'assigned') return false;
+  if (userRole === 'administrator') return true;
+  if (userRole !== 'qa_approver' || !userId) return false;
+  if (inspectionSkipsPart2Part3(ir)) return true;
+  return (
+    ir.nominated_team_head_id != null && Number(ir.nominated_team_head_id) === userId
+  );
+}
+
+export function canUserRejectPart4(
+  ir: Parameters<typeof canUserApprovePart4>[0],
+  userId: number,
+  userRole?: string
+): boolean {
+  return canUserApprovePart4(ir, userId, userRole);
+}
+
+/** Part IV (R&QA report) — editable while assigned (before Start); locked while pending/approved by Team Head; locked after Part V when ORDAQA path applies. */
 export function canUserUpdatePart4(
   ir: {
     inspector_id?: number | null;
@@ -957,11 +1027,14 @@ export function canUserUpdatePart4(
     forwarded_to_ordaqa?: boolean | null;
     part3_data?: unknown;
     ordaqa_inspector_id?: number | null;
+    part4_data?: unknown;
   },
   userId: number,
   userRole?: string
 ): boolean {
   if (ordqaPart5Completed(ir)) return false;
+  if (part4PendingTeamHeadApproval(ir)) return false;
+  if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') return false;
   const status = ir.status || '';
   if (inspectionSkipsPart2Part3(ir)) {
     if (!(SKIPPED_PART2_PART4_STATUSES as readonly string[]).includes(status)) return false;
@@ -987,6 +1060,7 @@ export function inspectionReadyToStart(ir: {
   ordaqa_approver_id?: number | null;
 }): boolean {
   if (!inspectionPart4Saved(ir)) return false;
+  if (!part4ApprovedByTeamHead(ir)) return false;
   if (inspectionRequiresOrdqaPart5(ir)) return ordqaPart5Completed(ir);
   return true;
 }
@@ -1110,7 +1184,7 @@ export function canUserOrdqaHeadPart5SendBack(
   return canUserApproveOrdqaPart5(ir, userRole);
 }
 
-/** Part IV saved; when ORDAQA, Part V submitted and Head-approved — required before Complete Inspection. */
+/** Part IV saved & Team Head–approved; when ORDAQA, Part V submitted and Head-approved — required before Complete Inspection. */
 export function inspectionReportsReadyForTeamHead(ir: {
   part4_data?: unknown;
   part3_data?: unknown;
@@ -1118,6 +1192,7 @@ export function inspectionReportsReadyForTeamHead(ir: {
   ordaqa_approver_id?: number | null;
 }): boolean {
   if (!inspectionPart4Saved(ir)) return false;
+  if (!part4ApprovedByTeamHead(ir)) return false;
   if (!inspectionRequiresOrdqaPart5(ir)) return true;
   return ordqaPart5Completed(ir);
 }

@@ -2,7 +2,16 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
-import { MessageSquare, Send, Loader2 } from 'lucide-react';
+import {
+  MessageSquare,
+  Send,
+  Loader2,
+  Paperclip,
+  X,
+  FileText,
+  Download,
+  CircleCheck,
+} from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -21,6 +30,10 @@ interface ChatMessage {
   sender_id: number;
   sender_name?: string;
   message: string;
+  attachment_file_name?: string | null;
+  attachment_file_path?: string | null;
+  attachment_file_type?: string | null;
+  attachment_file_size?: number | null;
   created_at: string;
 }
 
@@ -34,10 +47,16 @@ interface ObservationChatDialogProps {
   observationPreview: string;
   isClosed?: boolean;
   requestNumber?: string;
+  /** Optional initial hint; final permissions come from the API. */
+  canReply?: boolean;
+  canClose?: boolean;
   onThreadReady?: (threadId: number) => void;
   onMessageSent?: () => void;
   onAcknowledged?: () => void;
+  onClosed?: () => void;
 }
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 function formatChatTime(iso: string): string {
   try {
@@ -46,6 +65,18 @@ function formatChatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isImageAttachment(fileType?: string | null, fileName?: string | null): boolean {
+  if (fileType?.startsWith('image/')) return true;
+  const name = (fileName || '').toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(name);
 }
 
 export function ObservationChatDialog({
@@ -58,20 +89,28 @@ export function ObservationChatDialog({
   observationPreview,
   isClosed = false,
   requestNumber,
+  canReply: canReplyHint = false,
+  canClose: canCloseHint = false,
   onThreadReady,
   onMessageSent,
   onAcknowledged,
+  onClosed,
 }: ObservationChatDialogProps) {
   const { data: session } = useSession();
   const userId = parseInt((session?.user as { id?: string })?.id || '0', 10);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [error, setError] = useState('');
   const [activeThreadId, setActiveThreadId] = useState<number | null>(threadId);
   const [closed, setClosed] = useState(isClosed);
+  const [canReply, setCanReply] = useState(canReplyHint);
+  const [canClose, setCanClose] = useState(canCloseHint);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const acknowledge = useCallback(
     async (id: number) => {
@@ -94,6 +133,8 @@ export function ObservationChatDialog({
       if (!res.ok) throw new Error(data.error || 'Failed to load chat');
       setMessages(data.messages || []);
       setClosed(!!data.thread?.is_closed);
+      setCanReply(!!data.can_reply);
+      setCanClose(!!data.can_close);
       await acknowledge(id);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load chat');
@@ -125,6 +166,8 @@ export function ObservationChatDialog({
           setActiveThreadId(id);
           onThreadReady?.(id);
           setClosed(!!data.thread?.is_closed);
+          if (typeof data.can_reply === 'boolean') setCanReply(data.can_reply);
+          if (typeof data.can_close === 'boolean') setCanClose(data.can_close);
         }
       }
       if (id) await loadThread(id);
@@ -147,6 +190,11 @@ export function ObservationChatDialog({
     if (!open) return;
     setActiveThreadId(threadId);
     setClosed(isClosed);
+    setCanReply(canReplyHint);
+    setCanClose(canCloseHint);
+    setPendingFile(null);
+    setDraft('');
+    setError('');
     void ensureAndLoad();
   }, [open, threadId, isClosed]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -154,21 +202,40 @@ export function ObservationChatDialog({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, open]);
 
+  const handleFilePick = (file: File | null) => {
+    if (!file) {
+      setPendingFile(null);
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setError('File size exceeds 10MB limit');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    setError('');
+    setPendingFile(file);
+  };
+
   const handleSend = async () => {
     const text = draft.trim();
-    if (!text || !activeThreadId || closed) return;
+    if ((!text && !pendingFile) || !activeThreadId || closed || !canReply) return;
     setSending(true);
     setError('');
     try {
+      const formData = new FormData();
+      formData.append('message', text);
+      if (pendingFile) formData.append('file', pendingFile);
+
       const res = await fetch(`/api/observation-chats/${activeThreadId}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: formData,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send');
       setMessages((prev) => [...prev, data.message]);
       setDraft('');
+      setPendingFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       if (activeThreadId) await acknowledge(activeThreadId);
       onMessageSent?.();
     } catch (e) {
@@ -178,21 +245,66 @@ export function ObservationChatDialog({
     }
   };
 
+  const handleCloseObservation = async () => {
+    if (!activeThreadId || closed || !canClose || closing) return;
+    setClosing(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/observation-chats/${activeThreadId}/close`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to close');
+      setClosed(true);
+      onClosed?.();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('observation-chat-acknowledged'));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to close observation');
+    } finally {
+      setClosing(false);
+    }
+  };
+
   const partLabel = part === 'part4' ? 'Part IV — R&QA' : 'Part V — DGAQA';
+  const canSend = canReply && (!!draft.trim() || !!pendingFile);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[480px] p-0 gap-0 overflow-hidden">
         <DialogHeader className="px-4 pt-4 pb-3 border-b bg-muted/30">
-          <DialogTitle className="text-base flex items-center gap-2">
-            <MessageSquare className="h-4 w-4 text-[#1e3a5f]" />
-            Observation Chat
-            {closed && (
-              <Badge variant="secondary" className="text-[10px] font-normal">
-                Closed
-              </Badge>
+          <div className="flex items-start justify-between gap-2 pr-6">
+            <DialogTitle className="text-base flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-[#1e3a5f]" />
+              Observation Chat
+              {closed && (
+                <Badge variant="secondary" className="text-[10px] font-normal">
+                  Closed
+                </Badge>
+              )}
+              {!closed && !canReply && (
+                <Badge variant="outline" className="text-[10px] font-normal">
+                  View only
+                </Badge>
+              )}
+            </DialogTitle>
+            {canClose && !closed && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs text-emerald-700 border-emerald-200 hover:bg-emerald-50 shrink-0"
+                disabled={closing}
+                onClick={() => void handleCloseObservation()}
+              >
+                {closing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                ) : (
+                  <CircleCheck className="h-3.5 w-3.5 mr-1" />
+                )}
+                Close
+              </Button>
             )}
-          </DialogTitle>
+          </div>
           <DialogDescription className="text-xs space-y-0.5">
             {requestNumber && <span className="font-mono">{requestNumber}</span>}
             <span className="block text-muted-foreground">{partLabel}</span>
@@ -208,11 +320,15 @@ export function ObservationChatDialog({
             </div>
           ) : messages.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              No messages yet. Start the conversation with the initiator.
+              No messages yet.
             </p>
           ) : (
             messages.map((m) => {
               const isMine = m.sender_id === userId;
+              const hasAttachment = !!m.attachment_file_path;
+              const showText =
+                !!m.message?.trim() &&
+                !(hasAttachment && m.message.trim() === `[Attachment] ${m.attachment_file_name || ''}`.trim());
               return (
                 <div key={m.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                   <div
@@ -225,7 +341,49 @@ export function ObservationChatDialog({
                     {!isMine && (
                       <p className="text-[10px] font-medium opacity-70 mb-0.5">{m.sender_name || 'User'}</p>
                     )}
-                    <p className="whitespace-pre-wrap break-words">{m.message}</p>
+                    {showText && (
+                      <p className="whitespace-pre-wrap break-words">{m.message}</p>
+                    )}
+                    {hasAttachment && (
+                      <div className={`mt-1.5 ${showText ? 'pt-1.5 border-t' : ''} ${isMine ? 'border-white/20' : 'border-border'}`}>
+                        {isImageAttachment(m.attachment_file_type, m.attachment_file_name) ? (
+                          <a
+                            href={m.attachment_file_path!}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={m.attachment_file_path!}
+                              alt={m.attachment_file_name || 'Attachment'}
+                              className="max-h-40 max-w-full rounded-md object-contain bg-black/10"
+                            />
+                          </a>
+                        ) : null}
+                        <a
+                          href={m.attachment_file_path!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          download={m.attachment_file_name || undefined}
+                          className={`mt-1.5 inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline ${
+                            isMine ? 'text-white/90' : 'text-foreground'
+                          }`}
+                        >
+                          {isImageAttachment(m.attachment_file_type, m.attachment_file_name) ? (
+                            <Download className="h-3.5 w-3.5 shrink-0" />
+                          ) : (
+                            <FileText className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <span className="truncate max-w-[200px]">{m.attachment_file_name || 'Download file'}</span>
+                          {m.attachment_file_size != null && (
+                            <span className={isMine ? 'text-white/60' : 'text-muted-foreground'}>
+                              ({formatFileSize(Number(m.attachment_file_size))})
+                            </span>
+                          )}
+                        </a>
+                      </div>
+                    )}
                     <p className={`text-[10px] mt-1 ${isMine ? 'text-white/60' : 'text-muted-foreground'}`}>
                       {formatChatTime(m.created_at)}
                     </p>
@@ -246,30 +404,73 @@ export function ObservationChatDialog({
             <p className="text-xs text-muted-foreground text-center py-2">
               This observation is closed. Chat is no longer available.
             </p>
+          ) : !canReply ? (
+            <p className="text-xs text-muted-foreground text-center py-2">
+              You can view this observation discussion. Only the initiator and assigned inspectors can reply.
+            </p>
           ) : (
-            <div className="flex gap-2">
-              <Textarea
-                rows={2}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="Type a message to the initiator..."
-                className="text-sm min-h-[60px] resize-none"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSend();
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                size="icon"
-                className="shrink-0 h-[60px] w-11 bg-[#1e3a5f] hover:bg-[#2a4d7a]"
-                disabled={sending || !draft.trim()}
-                onClick={() => void handleSend()}
-              >
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              </Button>
+            <div className="space-y-2">
+              {pendingFile && (
+                <div className="flex items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs">
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate flex-1">{pendingFile.name}</span>
+                  <span className="text-muted-foreground shrink-0">{formatFileSize(pendingFile.size)}</span>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => {
+                      setPendingFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = '';
+                    }}
+                    aria-label="Remove attachment"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => handleFilePick(e.target.files?.[0] || null)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="shrink-0 h-[60px] w-11"
+                  disabled={sending}
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach file"
+                  aria-label="Attach file"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+                <Textarea
+                  rows={2}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder="Type a reply..."
+                  className="text-sm min-h-[60px] resize-none"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  className="shrink-0 h-[60px] w-11 bg-[#1e3a5f] hover:bg-[#2a4d7a]"
+                  disabled={sending || !canSend}
+                  onClick={() => void handleSend()}
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">Attachments up to 10 MB</p>
             </div>
           )}
         </div>
