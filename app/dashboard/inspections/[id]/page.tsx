@@ -56,6 +56,7 @@ import {
   formatTestTypeToken,
   formatReceivedDateTimeDisplay,
   formatCalendarDateDisplay,
+  formatSourceLabel,
   getLocalDateTimeNow,
   toDateOnlyYmd,
   parseYmdLocal,
@@ -69,8 +70,10 @@ import {
   canUserCompleteInspection,
   canUserApproveOrdqaPart5,
   canUserOrdqaHeadPart5SendBack,
+  canUserUpdatePart5,
   canUserApprovePart4,
   canUserRejectPart4,
+  canUserTeamHeadEditPart4,
   part4PendingTeamHeadApproval,
   part4ApprovedByTeamHead,
   part4RejectedByTeamHead,
@@ -89,14 +92,47 @@ import {
   parsePreviousStageCleared,
   formatAssignedInspectorsDisplay,
   resolveAssignedInspectorsForDisplay,
-  teamHeadFinalSignoffApproved,
+  resolvePart4TeamHeadSignoff,
   isUserAssignedPart2Inspector,
   inspectionSkipsPart2Part3,
   jointInspectionRequestedInPart1,
   canUserQaApproverApproveAndClose,
   canUserQaApproverReject,
   canUserQaApproverSendBack,
+  inspectionReadyForFinalTeamHeadApproval,
 } from '@/lib/inspection-display';
+import {
+  parsePart1CertifierEditSummary,
+  type Part1FieldChange,
+} from '@/lib/part1-field-diff';
+
+/** Highlight + previous value for Part I rows edited by nominated Request Approver / DH. */
+function Part1RowEditNote({ changes }: { changes: Part1FieldChange[] }) {
+  if (!changes.length) return null;
+  return (
+    <div className="mt-1.5 rounded-md border border-amber-200/80 bg-amber-50/80 px-2 py-1.5 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+      <p className="font-semibold text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-300 mb-1">
+        Updated by Request Approver
+      </p>
+      <ul className="space-y-0.5">
+        {changes.map((c) => (
+          <li key={c.key}>
+            {changes.length > 1 && <span className="font-medium">{c.label}: </span>}
+            <span className="opacity-70 line-through decoration-amber-500/50">{c.from}</span>
+            <span className="mx-1 text-amber-700 dark:text-amber-300">→</span>
+            <span className="font-medium">{c.to}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function part1RowClass(changed: boolean): string | undefined {
+  return changed
+    ? 'bg-amber-50/90 dark:bg-amber-950/20 ring-1 ring-inset ring-amber-200/60 dark:ring-amber-800/50'
+    : undefined;
+}
 
 function parseJsonArray(val: any): string[] {
   if (Array.isArray(val)) return val;
@@ -288,6 +324,8 @@ interface InspectionRequest {
   test_type_other?: string;
   so_details?: string;
   delivery_period?: string;
+  so_involves_dgaqa?: boolean | null;
+  so_involves_rqa?: boolean | null;
   source?: string;
   oem_name?: string;
   lru_nomenclature?: string;
@@ -312,7 +350,14 @@ interface InspectionRequest {
   design_coordinator_name?: string;
   certified_by_name?: string;
   certified_by_designation?: string;
+  nominated_request_approver_id?: number | null;
   nominated_request_approver_name?: string;
+  /** JSON summary of Part I fields last edited by nominated Request Approver / DH certifier */
+  part1_certifier_edit_summary?: string | null;
+  part1_approver_name?: string;
+  part1_approved_by?: number | null;
+  part1_approved_by_name?: string;
+  part1_approved_at?: string | null;
   // Workflow fields
   request_approver_id?: number;
   request_approver_name?: string;
@@ -367,7 +412,7 @@ const DOC_TYPE_ORDER = ['ts', 'qap', 'sop_mdi', 'qtp_lqtp_softp', 'ftp_atp', 'pc
 const DOC_TYPE_LABELS: Record<string, string> = {
   ts: 'TS',
   qap: 'QAP',
-  sop_mdi: 'SOP/MDI',
+  sop_mdi: 'SOP/MDI/BOM/ICD',
   qtp_lqtp_softp: 'QTP/LQTP/SOFTP',
   ftp_atp: 'FTP/ATP',
   pc_ta_other: 'PC/TA/Other Doc',
@@ -395,12 +440,12 @@ const fmtDateTime = (val: any): string => {
 };
 
 const CONFIRMATION_LABELS: Record<string, string> = {
-  approved_docs_available: 'Approved documents available at time of inspection',
-  logbook_updated: 'Log book updated up to previous stage',
-  previous_observations_status: 'Previous inspection observations complied',
-  cocs_available: 'Certificates of Conformance available',
-  instruments_available: 'Calibrated instruments available',
-  joint_inspection_request: 'Joint inspection requested',
+  approved_docs_available: 'a) Approved copies of documents are available at place of inspection before start of QA coverage for LRU.',
+  logbook_updated: 'b) R&QA controlled Log book with template are updated.',
+  previous_observations_status: 'c) Status of the previous observations/NCs.',
+  cocs_available: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.',
+  instruments_available: 'e) Applicable measuring instruments/Testing facilities are available with valid calibration certificates.',
+  joint_inspection_request: 'f) Request for Joint Inspection with ORDAQA as per approved QAP.',
 };
 
 export default function InspectionDetailPage() {
@@ -410,6 +455,21 @@ export default function InspectionDetailPage() {
   const [inspection, setInspection] = useState<InspectionRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
+  const goToTab = (tab: string) => {
+    setActiveTab(tab);
+    window.setTimeout(() => {
+      const panel = document.getElementById(`inspection-tab-${tab}`);
+      const formAnchor =
+        tab === 'part2'
+          ? document.getElementById('part2-fill-form')
+          : tab === 'part3'
+            ? document.getElementById('part3-fill-form')
+            : tab === 'part4'
+              ? document.getElementById('part4-fill-form')
+              : null;
+      (formAnchor || panel)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  };
   const [showAddChecklistDialog, setShowAddChecklistDialog] = useState(false);
   const [showViewChecklistDialog, setShowViewChecklistDialog] = useState(false);
   const [showEditChecklistDialog, setShowEditChecklistDialog] = useState(false);
@@ -935,6 +995,7 @@ export default function InspectionDetailPage() {
       pending: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
       draft: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
       pending_request_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300',
+      pending_part1_approval: 'bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300',
       request_approved: 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300',
       assigned: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300',
       in_progress: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
@@ -950,6 +1011,7 @@ export default function InspectionDetailPage() {
     };
     const labels: Record<string, string> = {
       pending_request_approval: 'PENDING FORWARD',
+      pending_part1_approval: 'PENDING PART I APPROVAL',
       request_approved: 'FORWARDED',
       inspection_completed: 'INSPECTION DONE',
       pending_qa_approval: 'PENDING QA',
@@ -988,6 +1050,27 @@ export default function InspectionDetailPage() {
     );
   }
 
+  // Field-level "Updated" markers are only for Initiator/Designer (and admin) — not other roles.
+  const canSeePart1CertifierEdits =
+    inspection.initiator_id === permissions.userId || permissions.isAdmin();
+  const part1EditSummary = canSeePart1CertifierEdits
+    ? parsePart1CertifierEditSummary(inspection.part1_certifier_edit_summary)
+    : null;
+  // Section 20 designer-rep identity is never a Request Approver edit (false positives filtered)
+  const PART1_DESIGNER_REP_KEYS = new Set([
+    'designer_rep_name',
+    'designer_rep_designation',
+    'designer_rep_contact',
+  ]);
+  const part1ChangesByKey = new Map(
+    (part1EditSummary?.changes || [])
+      .filter((c) => c?.key && !PART1_DESIGNER_REP_KEYS.has(c.key))
+      .map((c) => [c.key, c] as const)
+  );
+  const part1Changed = (...keys: string[]) => keys.some((k) => part1ChangesByKey.has(k));
+  const part1Notes = (...keys: string[]) =>
+    keys.map((k) => part1ChangesByKey.get(k)).filter(Boolean) as Part1FieldChange[];
+
   return (
     <div className="space-y-6">
       {/* Action message — fixed so it stays visible without scrolling */}
@@ -1013,17 +1096,19 @@ export default function InspectionDetailPage() {
         inspection.request_approver_send_back_comment &&
         !permissions.isRequestApprover() && (
         <div className="rounded-lg border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
-          <p className="font-medium">Sent back by Request Approver</p>
+          <p className="font-medium">Sent back by Part I Approver</p>
           <p className="mt-1 text-amber-900/90 dark:text-amber-200/90 whitespace-pre-wrap">
             {inspection.request_approver_send_back_comment}
           </p>
           <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-300/90">
-            Update Part I as needed, then resubmit for Request Approver approval.
+            Update Part I as needed, then resubmit for Part I approval (employee 1021).
           </p>
         </div>
       )}
       {inspection.request_approver_forward_comment &&
-        (permissions.isQaHead() || permissions.isAdmin()) &&
+        (permissions.isQaHead() ||
+          permissions.isAdmin() ||
+          permissions.isPart1Approver()) &&
         inspection.status !== 'pending_request_approval' &&
         inspection.status !== 'pending' &&
         inspection.status !== 'draft' && (
@@ -1063,17 +1148,6 @@ export default function InspectionDetailPage() {
           </p>
           <p className="mt-2 text-xs text-cyan-800/80 dark:text-cyan-300/90">
             Update Part I as applicable for the designer, then resubmit.
-          </p>
-        </div>
-      )}
-      {inspection.status === 'returned_to_designer' &&
-        !inspection.request_approver_send_back_comment &&
-        !inspection.qa_approver_send_back_comment &&
-        !inspection.ordaqa_inspector_send_back_comment && (
-        <div className="rounded-lg border border-orange-200 bg-orange-50/90 px-4 py-3 text-sm text-orange-950 dark:border-orange-800 dark:bg-orange-950/30 dark:text-orange-100">
-          <p className="font-medium">Returned to designer (Section 22)</p>
-          <p className="mt-1 text-orange-900/90 dark:text-orange-200/90">
-            The initiator should update Part I, then resubmit. The Design Request Approver forwards the IR again; the QA Head then completes Part II (including nominating Team Head – QA). The nominated Team Head – QA and Request Approver were notified.
           </p>
         </div>
       )}
@@ -1124,17 +1198,27 @@ export default function InspectionDetailPage() {
       <Dialog open={forwardDialogOpen} onOpenChange={setForwardDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Forward request to QA Head</DialogTitle>
+            <DialogTitle>
+              {inspection?.status === 'pending_part1_approval'
+                ? 'Approve Part I and forward to QA Head'
+                : 'Forward to Part I Approver'}
+            </DialogTitle>
             <DialogDescription>
-              The IR will be forwarded for QA Head review (Part II). You may optionally add a comment for the QA Head.
+              {inspection?.status === 'pending_part1_approval'
+                ? 'Part I will be approved and the IR will go to QA Head (Part II). You may optionally add a comment.'
+                : 'The IR will be sent to the Part I Approver. You may optionally add a comment.'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
-            <Label htmlFor="forward-comment">Comment for QA Head (optional)</Label>
+            <Label htmlFor="forward-comment">
+              {inspection?.status === 'pending_part1_approval'
+                ? 'Comment for QA Head (optional)'
+                : 'Comment for Part I Approver (optional)'}
+            </Label>
             <Textarea
               id="forward-comment"
               rows={4}
-              placeholder="Add notes or instructions for the QA Head..."
+              placeholder="Add notes or instructions..."
               value={forwardComment}
               onChange={(e) => setForwardComment(e.target.value)}
             />
@@ -1147,7 +1231,9 @@ export default function InspectionDetailPage() {
               type="button"
               onClick={async () => {
                 const trimmed = forwardComment.trim();
-                const ok = await handleWorkflowAction('request_approve', {
+                const action =
+                  inspection?.status === 'pending_part1_approval' ? 'part1_approve' : 'request_approve';
+                const ok = await handleWorkflowAction(action, {
                   comments: trimmed || undefined,
                 });
                 if (ok) {
@@ -1157,7 +1243,7 @@ export default function InspectionDetailPage() {
               }}
             >
               <CheckCircle className="mr-2 h-4 w-4" />
-              Forward Request
+              {inspection?.status === 'pending_part1_approval' ? 'Approve Part I' : 'Forward Request'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1364,6 +1450,45 @@ export default function InspectionDetailPage() {
               {getStatusBadge(inspection.status)}
             </div>
             <p className="text-muted-foreground">{inspection.request_number}</p>
+            {(() => {
+              const st = String(inspection.status || '');
+              const forwardedTo =
+                inspection.request_approver_name?.trim() ||
+                inspection.nominated_request_approver_name?.trim() ||
+                null;
+              const reachedPart1Queue =
+                Boolean(forwardedTo) ||
+                st === 'pending_part1_approval' ||
+                Boolean(inspection.part1_approved_by) ||
+                Boolean(inspection.part1_approved_by_name) ||
+                ![
+                  'pending',
+                  'draft',
+                  'pending_request_approval',
+                  'rejected',
+                ].includes(st);
+              if (!reachedPart1Queue) return null;
+              const pendingApproval = st === 'pending_part1_approval';
+              // Only show a real Part I approval — never fall back to the role holder (1021) name
+              const approvedBy =
+                st === 'returned_to_designer' ||
+                st === 'pending_request_approval' ||
+                st === 'pending' ||
+                st === 'draft' ||
+                st === 'rejected'
+                  ? null
+                  : inspection.part1_approved_by_name?.trim() || null;
+              return (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Part I forwarded to: <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
+                  {' · '}
+                  Approved by:{' '}
+                  <span className="font-medium text-foreground">
+                    {approvedBy || (pendingApproval ? 'Pending' : '—')}
+                  </span>
+                </p>
+              );
+            })()}
           </div>
         </div>
 
@@ -1376,18 +1501,20 @@ export default function InspectionDetailPage() {
             <Printer className="h-4 w-4" />
             Print PDF
           </Button>
-          {/* Part I author (creator) or admin: Edit Part I */}
-          {(inspection.initiator_id === permissions.userId || permissions.isAdmin()) &&
-            ['pending', 'draft', 'returned_to_designer', 'pending_request_approval'].includes(inspection.status) && (
+          {/* Part I author / admin: draft–return only. Nominated field-21 certifier may edit while awaiting forward. */}
+          {((inspection.initiator_id === permissions.userId || permissions.isAdmin()) &&
+            ['pending', 'draft', 'returned_to_designer'].includes(inspection.status)) ||
+          permissions.canEditPart1AsCertifier(inspection) ? (
               <Button variant="outline" asChild>
                 <Link href={`/dashboard/inspections/new?edit=${inspection.id}`}>
                   <Edit className="mr-2 h-4 w-4" />
                   Edit Part I
                 </Link>
               </Button>
-            )}
-          {/* Request Approver: Send back / Reject / Forward */}
-          {(inspection.status === 'pending_request_approval' || inspection.status === 'pending') && permissions.isRequestApprover() && (
+            ) : null}
+          {/* Request Approver / nominated DH Initiator: Forward / Send back / Reject */}
+          {(inspection.status === 'pending_request_approval' || inspection.status === 'pending') &&
+            permissions.canActAsRequestCertifier(inspection) && (
             <>
               <Button
                 variant="outline"
@@ -1415,12 +1542,31 @@ export default function InspectionDetailPage() {
               </Button>
             </>
           )}
+          {/* Part I Approver (employee 1021): after RA forward — Approve / Reject only (no send back) */}
+          {inspection.status === 'pending_part1_approval' && permissions.isPart1Approver() && (
+            <>
+              <Button variant="outline" onClick={() => {
+                const reason = prompt('Reason for rejection:');
+                if (reason) handleWorkflowAction('request_reject', { reason });
+              }}>
+                <XCircle className="mr-2 h-4 w-4" />
+                Reject
+              </Button>
+              <Button onClick={() => {
+                setForwardComment('');
+                setForwardDialogOpen(true);
+              }}>
+                <CheckCircle className="mr-2 h-4 w-4" />
+                Approve Part I
+              </Button>
+            </>
+          )}
           {/* QA Head: Fill Part II Step 1 (not when Part I 19(f) is No/N/A) */}
           {!inspectionSkipsPart2Part3(inspection) &&
             inspection.status === 'request_approved' &&
             !inspection.nominated_team_head_id &&
             (permissions.isQaHead() || permissions.isAdmin()) && (
-            <Button onClick={() => setActiveTab('part2')}>
+            <Button onClick={() => goToTab('part2')}>
               <Edit className="mr-2 h-4 w-4" />
               Fill Part II
             </Button>
@@ -1429,27 +1575,55 @@ export default function InspectionDetailPage() {
             (permissions.isQaHead() || permissions.isAdmin()) &&
             !!inspection.nominated_team_head_id &&
             ['request_approved', 'assigned', 'in_progress'].includes(inspection.status) && (
-            <Button variant="outline" onClick={() => setActiveTab('part2')}>
+            <Button variant="outline" onClick={() => goToTab('part2')}>
               <Edit className="mr-2 h-4 w-4" />
               Edit Part II
             </Button>
           )}
-          {inspectionSkipsPart2Part3(inspection) &&
-            permissions.userRole === 'inspector' &&
+          {!inspectionSkipsPart2Part3(inspection) &&
+            canEditPart3Section23(inspection) &&
+            (permissions.isOrdaqaHead() || permissions.isAdmin()) &&
+            !part3Section23HasSavedData(inspection) && (
+            <Button onClick={() => goToTab('part3')}>
+              <Edit className="mr-2 h-4 w-4" />
+              Fill Part III
+            </Button>
+          )}
+          {!inspectionSkipsPart2Part3(inspection) &&
+            canEditPart3Section23(inspection) &&
+            (permissions.isOrdaqaHead() || permissions.isAdmin()) &&
+            part3Section23HasSavedData(inspection) && (
+            <Button variant="outline" onClick={() => goToTab('part3')}>
+              <Edit className="mr-2 h-4 w-4" />
+              Edit Part III
+            </Button>
+          )}
+          {(permissions.userRole === 'inspector' || permissions.isAdmin()) &&
             canUserUpdatePart4(inspection, permissions.userId, permissions.userRole) &&
             !inspectionPart4Saved(inspection) && (
-            <Button onClick={() => setActiveTab('part4')}>
+            <Button onClick={() => goToTab('part4')}>
               <Edit className="mr-2 h-4 w-4" />
               Fill Part IV
             </Button>
           )}
-          {inspectionSkipsPart2Part3(inspection) &&
-            permissions.userRole === 'inspector' &&
+          {(permissions.userRole === 'inspector' || permissions.isAdmin()) &&
             canUserUpdatePart4(inspection, permissions.userId, permissions.userRole) &&
             inspectionPart4Saved(inspection) && (
-            <Button variant="outline" onClick={() => setActiveTab('part4')}>
+            <Button variant="outline" onClick={() => goToTab('part4')}>
               <Edit className="mr-2 h-4 w-4" />
               Edit Part IV
+            </Button>
+          )}
+          {canUserTeamHeadEditPart4(inspection, permissions.userId, permissions.userRole) && (
+            <Button variant="outline" onClick={() => goToTab('part4')}>
+              <Edit className="mr-2 h-4 w-4" />
+              Edit Part IV
+            </Button>
+          )}
+          {canUserUpdatePart5(inspection, permissions.userId, permissions.userRole) && (
+            <Button onClick={() => goToTab('part5')}>
+              <Edit className="mr-2 h-4 w-4" />
+              Fill Part V
             </Button>
           )}
           {/* Nominated Team Head (QA approver): Assign / edit inspectors (Part II Step 2) */}
@@ -1461,10 +1635,11 @@ export default function InspectionDetailPage() {
               permissions.isAdmin()
             ) &&
             !!inspection.nominated_team_head_id &&
+            !inspectionPart4Saved(inspection) &&
             ((inspection.status === 'request_approved' && !hasInspectorsAssignedInsp(inspection)) ||
               (hasInspectorsAssignedInsp(inspection) &&
                 ['assigned', 'in_progress'].includes(inspection.status))) && (
-            <Button onClick={() => setActiveTab('part2')}>
+            <Button onClick={() => goToTab('part2')}>
               <Edit className="mr-2 h-4 w-4" />
               {hasInspectorsAssignedInsp(inspection) ? 'Edit Inspector Assignment' : 'Assign Inspector(s)'}
             </Button>
@@ -1487,7 +1662,7 @@ export default function InspectionDetailPage() {
               Send back
             </Button>
           )}
-          {/* Assigned Part II inspector(s): Start inspection */}
+          {/* Administrator only: Start & Complete inspection (not R&QA inspector / Team Head – QA) */}
           {canUserStartInspection(inspection, permissions.userId, permissions.userRole) && (
             <Button onClick={() => handleWorkflowAction('start_inspection')}>
               Start Inspection
@@ -1537,7 +1712,7 @@ export default function InspectionDetailPage() {
               Approve Part IV
             </Button>
           )}
-          {/* Team Head - QA (qa_approver): Reject / Approve & Close after inspection completed */}
+          {/* Team Head - QA (qa_approver): Reject / Approve & Close after Part V approved (or Part IV when no Part V) */}
           {canUserQaApproverReject(
             inspection,
             permissions.userId,
@@ -1591,6 +1766,16 @@ export default function InspectionDetailPage() {
                       Forward Request
                     </DropdownMenuItem>
                   </>
+                )}
+                {inspection.status === 'pending_part1_approval' && (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setForwardComment('');
+                      setForwardDialogOpen(true);
+                    }}
+                  >
+                    Approve Part I
+                  </DropdownMenuItem>
                 )}
                 {['request_approved', 'assigned', 'in_progress', 'inspection_completed'].includes(inspection.status) && (
                   <DropdownMenuItem
@@ -1715,27 +1900,45 @@ export default function InspectionDetailPage() {
                 !needsOrdqa || part3CompleteForOrdqaWorkflow(inspection);
               const p4Done = inspectionPart4Saved(inspection);
               const p4Unlocked = skipPart23 || (part23Done && part3OrdqaDone);
+              const p4Submitted =
+                p4Unlocked &&
+                p4Done &&
+                (part4PendingTeamHeadApproval(inspection) || part4ApprovedByTeamHead(inspection));
               const part5Na = skipPart23 || !needsOrdqa;
               const part23Na = skipPart23;
               const steps: { key: string; done: boolean; na?: boolean }[] = [
-                { key: 'Part I', done: !['pending', 'draft', 'pending_request_approval', 'returned_to_designer'].includes(inspection.status) },
-                { key: 'Forwarded', done: !['pending', 'draft', 'pending_request_approval', 'returned_to_designer'].includes(inspection.status) },
+                // Tick once Part I is submitted to Request Approver (untick if returned to designer)
+                {
+                  key: 'Part I',
+                  done: !['pending', 'draft', 'returned_to_designer'].includes(inspection.status),
+                },
+                // Tick after Part I Approver / forward completes (past pending_part1_approval)
+                {
+                  key: 'Forwarded',
+                  done: !['pending', 'draft', 'pending_request_approval', 'pending_part1_approval', 'returned_to_designer'].includes(
+                    inspection.status
+                  ),
+                },
                 {
                   key: part23Na ? 'Part II/III (N/A)' : needsOrdqa ? 'Part II/III' : 'Part II',
                   done: !part23Na && part23Done && part3OrdqaDone,
                   na: part23Na,
                 },
-                { key: 'Part IV', done: p4Unlocked && p4Done },
-                {
-                  key: part5Na ? 'Part V (N/A)' : 'Part V',
-                  done: !part5Na && p4Unlocked && p4Done && ordqaPart5Completed(inspection),
-                  na: part5Na,
-                },
+                // Tick when Part IV is submitted (pending Team Head or already approved)
+                { key: 'Part IV', done: p4Submitted },
                 {
                   key: 'Inspection',
-                  done: ['inspection_completed', 'completed', 'approved', 'pending_ordaqa_approval', 'qa_approved'].includes(
-                    inspection.status
-                  ),
+                  // Same as Part IV submit — both tick when Part IV is submitted
+                  done:
+                    p4Submitted ||
+                    ['inspection_completed', 'completed', 'approved', 'pending_ordaqa_approval', 'qa_approved'].includes(
+                      inspection.status
+                    ),
+                },
+                {
+                  key: part5Na ? 'Part V (N/A)' : 'Part V',
+                  done: !part5Na && p4Unlocked && p4Done && part4ApprovedByTeamHead(inspection) && ordqaPart5Completed(inspection),
+                  na: part5Na,
                 },
                 { key: 'Approved', done: !!inspection.final_qa_approver_id },
                 { key: 'Completed', done: inspection.status === 'completed' },
@@ -1806,35 +2009,59 @@ export default function InspectionDetailPage() {
                   </span>
                 </div>
               </div>
-              <CardDescription>Part I — Details of item(s) to be inspected</CardDescription>
+              <CardDescription>
+                Part I — Details of item(s) to be inspected
+                {part1EditSummary && part1EditSummary.changes.length > 0 && (
+                  <span className="ml-2 text-amber-700 dark:text-amber-300">
+                    · Fields updated by {part1EditSummary.editedBy} are highlighted below
+                  </span>
+                )}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="border rounded-lg overflow-hidden">
                 <table className="w-full text-sm">
                   <tbody className="divide-y">
                     {/* Row 1: Programme */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium w-[220px] text-[navy] dark:text-blue-300">1. Programme / Project</td>
+                    <tr className={part1RowClass(part1Changed('project_id'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium w-[220px] text-[navy] dark:text-blue-300">
+                        1. Programme / Project
+                        {part1Changed('project_id') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <span className="font-medium">{inspection.project_name || '—'}</span>
                         {inspection.project_code && (
                           <Badge variant="outline" className="ml-2 align-middle font-mono text-xs">{inspection.project_code}</Badge>
                         )}
+                        <Part1RowEditNote changes={part1Notes('project_id')} />
                       </td>
                     </tr>
                     {/* Row 2: Subsystem */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">2. Sub System</td>
+                    <tr className={part1RowClass(part1Changed('subsystem_id'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        2. Sub System
+                        {part1Changed('subsystem_id') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <span className="font-medium">{inspection.subsystem_name || '—'}</span>
                         {inspection.subsystem_code && (
                           <Badge variant="outline" className="ml-2 align-middle font-mono text-xs">{inspection.subsystem_code}</Badge>
                         )}
+                        <Part1RowEditNote changes={part1Notes('subsystem_id')} />
                       </td>
                     </tr>
                     {/* Row 3: Item Pertains To */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">3. Item Pertains to</td>
+                    <tr className={part1RowClass(part1Changed('item_pertains_to', 'item_pertains_to_other', 'test_type', 'test_type_other'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        3. Item Pertains to
+                        {part1Changed('item_pertains_to', 'item_pertains_to_other', 'test_type', 'test_type_other') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <div className="flex flex-col gap-2">
                           <div className="flex flex-wrap gap-4">
@@ -1860,36 +2087,95 @@ export default function InspectionDetailPage() {
                             </p>
                           )}
                         </div>
+                        <Part1RowEditNote changes={part1Notes('item_pertains_to', 'item_pertains_to_other', 'test_type', 'test_type_other')} />
                       </td>
                     </tr>
                     {/* Row 4: SO Details */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">4. SO Details</td>
-                      <td className="px-4 py-2.5">
-                        <span>{inspection.so_details || '—'}</span>
-                        {inspection.delivery_period && (
-                          <span className="ml-6 text-muted-foreground">Delivery: <span className="text-foreground font-medium">{fmtDate(inspection.delivery_period)}</span></span>
+                    <tr className={part1RowClass(part1Changed('so_details', 'delivery_period', 'so_involves_dgaqa', 'so_involves_rqa'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        4. SO Details
+                        {part1Changed('so_details', 'delivery_period', 'so_involves_dgaqa', 'so_involves_rqa') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
                         )}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="space-y-2">
+                          <div>
+                            <span>{inspection.so_details || '—'}</span>
+                            {inspection.delivery_period && (
+                              <span className="ml-6 text-muted-foreground">Delivery: <span className="text-foreground font-medium">{fmtDate(inspection.delivery_period)}</span></span>
+                            )}
+                          </div>
+                          {(() => {
+                            const soAtt = (inspection.attachments || []).find((a) =>
+                              String(a.description || '').toLowerCase().includes('supply order')
+                            );
+                            return soAtt ? (
+                              <div className="flex items-center gap-2 text-sm">
+                                <Paperclip className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                <a
+                                  href={soAtt.file_path}
+                                  download
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-primary hover:underline truncate"
+                                >
+                                  {soAtt.file_name || 'Supply Order'}
+                                </a>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-muted-foreground">No Supply Order attachment</p>
+                            );
+                          })()}
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant={inspection.so_involves_dgaqa ? 'default' : 'secondary'}>
+                              DGAQA: {inspection.so_involves_dgaqa ? 'Yes' : 'No'}
+                            </Badge>
+                            <Badge variant={inspection.so_involves_rqa ? 'default' : 'secondary'}>
+                              R&QA: {inspection.so_involves_rqa ? 'Yes' : 'No'}
+                            </Badge>
+                          </div>
+                        </div>
+                        <Part1RowEditNote changes={part1Notes('so_details', 'delivery_period', 'so_involves_dgaqa', 'so_involves_rqa')} />
                       </td>
                     </tr>
                     {/* Row 5: Source */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">5. Source</td>
-                      <td className="px-4 py-2.5 capitalize">
-                        {inspection.source || '—'}
+                    <tr className={part1RowClass(part1Changed('source', 'oem_name'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        5. Source
+                        {part1Changed('source', 'oem_name') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {formatSourceLabel(inspection.source)}
                         {inspection.oem_name && (
                           <span className="ml-6 text-muted-foreground">OEM: <span className="text-foreground font-medium">{inspection.oem_name}</span></span>
                         )}
+                        <Part1RowEditNote changes={part1Notes('source', 'oem_name')} />
                       </td>
                     </tr>
                     {/* Row 6: LRU / SRU Nomenclature */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">6. LRU / SRU Nomenclature</td>
-                      <td className="px-4 py-2.5 font-medium">{inspection.lru_nomenclature || inspection.item || '—'}</td>
+                    <tr className={part1RowClass(part1Changed('lru_nomenclature', 'item', 'lru_id', 'sru_id'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        6. LRU / SRU Nomenclature
+                        {part1Changed('lru_nomenclature', 'item', 'lru_id', 'sru_id') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 font-medium">
+                        {inspection.lru_nomenclature || inspection.item || '—'}
+                        <Part1RowEditNote changes={part1Notes('lru_nomenclature', 'item', 'lru_id', 'sru_id')} />
+                      </td>
                     </tr>
                     {/* Row 7: Criticality */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">7. Criticality of Store</td>
+                    <tr className={part1RowClass(part1Changed('criticality'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        7. Criticality of Store
+                        {part1Changed('criticality') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         {(Array.isArray(inspection.criticality) ? inspection.criticality : parseJsonArray(inspection.criticality)).map((v: string) => {
                           const colors: Record<string, string> = {
@@ -1902,21 +2188,33 @@ export default function InspectionDetailPage() {
                           return <Badge key={v} className={`mr-1 ${colors[v.toLowerCase()] || ''}`}>{labels[v] || v}</Badge>;
                         })}
                         {!(Array.isArray(inspection.criticality) ? inspection.criticality : parseJsonArray(inspection.criticality)).length && <span className="text-muted-foreground">—</span>}
+                        <Part1RowEditNote changes={part1Notes('criticality')} />
                       </td>
                     </tr>
                     {/* Row 8-9: Part & Serial */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">8. Part Number</td>
+                    <tr className={part1RowClass(part1Changed('part_number', 'serial_number'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        8. Part Number
+                        {part1Changed('part_number', 'serial_number') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <span className="font-mono">{inspection.part_number || '—'}</span>
                         <span className="mx-6 text-muted-foreground">|</span>
                         <span className="text-muted-foreground">9. Serial No: </span>
                         <span className="font-mono">{inspection.serial_number || '—'}</span>
+                        <Part1RowEditNote changes={part1Notes('part_number', 'serial_number')} />
                       </td>
                     </tr>
                     {/* Row 10-11: Qty */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">10. No. of sets — Qty/set</td>
+                    <tr className={part1RowClass(part1Changed('quantity', 'quantity_per_set'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        10. No. of sets — Qty/set
+                        {part1Changed('quantity', 'quantity_per_set') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         {inspection.quantity != null && inspection.quantity_per_set != null ? (
                           <span>
@@ -1926,19 +2224,33 @@ export default function InspectionDetailPage() {
                         ) : (
                           '—'
                         )}
+                        <Part1RowEditNote changes={part1Notes('quantity', 'quantity_per_set')} />
                       </td>
                     </tr>
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">11. Qty</td>
+                    <tr className={part1RowClass(part1Changed('quantity') && inspection.quantity_per_set == null)}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        11. Qty
+                        {part1Changed('quantity') && inspection.quantity_per_set == null && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         {inspection.quantity != null && inspection.quantity_per_set == null
                           ? inspection.quantity
                           : '—'}
+                        {part1Changed('quantity') && inspection.quantity_per_set == null && (
+                          <Part1RowEditNote changes={part1Notes('quantity')} />
+                        )}
                       </td>
                     </tr>
                     {/* Row 12: Previous Stage */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">12. Previous Stage Cleared</td>
+                    <tr className={part1RowClass(part1Changed('previous_stage_cleared'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        12. Previous Stage Cleared
+                        {part1Changed('previous_stage_cleared') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         {(() => {
                           const psc = parsePreviousStageCleared(inspection.previous_stage_cleared);
@@ -1947,6 +2259,13 @@ export default function InspectionDetailPage() {
                             return (
                               <Badge variant="secondary" className="capitalize">
                                 No
+                              </Badge>
+                            );
+                          }
+                          if (psc.answer === 'na') {
+                            return (
+                              <Badge variant="secondary">
+                                NA
                               </Badge>
                             );
                           }
@@ -1967,20 +2286,38 @@ export default function InspectionDetailPage() {
                             </div>
                           );
                         })()}
+                        <Part1RowEditNote changes={part1Notes('previous_stage_cleared')} />
                       </td>
                     </tr>
                     {/* Row 13: Logbook */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">13. Log Book Copy Attached</td>
+                    <tr className={part1RowClass(part1Changed('logbook_attached'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        13. Log Book Copy Attached
+                        {part1Changed('logbook_attached') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
-                        <Badge variant={inspection.logbook_attached === 'yes' ? 'default' : 'secondary'} className="capitalize">
-                          {inspection.logbook_attached || '—'}
+                        <Badge variant={inspection.logbook_attached === 'yes' ? 'default' : 'secondary'} className={inspection.logbook_attached === 'na' ? undefined : 'capitalize'}>
+                          {inspection.logbook_attached === 'na'
+                            ? 'NA'
+                            : inspection.logbook_attached === 'yes'
+                              ? 'Yes'
+                              : inspection.logbook_attached === 'no'
+                                ? 'No'
+                                : inspection.logbook_attached || '—'}
                         </Badge>
+                        <Part1RowEditNote changes={part1Notes('logbook_attached')} />
                       </td>
                     </tr>
                     {/* Row 14: Inspection Stage */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">14. Inspection Stage Offered</td>
+                    <tr className={part1RowClass(part1Changed('inspection_stage'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        14. Inspection Stage Offered
+                        {part1Changed('inspection_stage') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <div className="flex flex-wrap gap-1">
                           {inspection.inspection_stage
@@ -1992,21 +2329,43 @@ export default function InspectionDetailPage() {
                             : <span className="text-muted-foreground">—</span>
                           }
                         </div>
+                        <Part1RowEditNote changes={part1Notes('inspection_stage')} />
                       </td>
                     </tr>
                     {/* Row 15: Mode */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">15. Mode of Inspection</td>
-                      <td className="px-4 py-2.5">{MODE_LABELS[inspection.inspection_mode || ''] || inspection.inspection_mode || '—'}</td>
+                    <tr className={part1RowClass(part1Changed('inspection_mode'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        15. Mode of Inspection
+                        {part1Changed('inspection_mode') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {MODE_LABELS[inspection.inspection_mode || ''] || inspection.inspection_mode || '—'}
+                        <Part1RowEditNote changes={part1Notes('inspection_mode')} />
+                      </td>
                     </tr>
                     {/* Row 16: Venue */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">16. Venue</td>
-                      <td className="px-4 py-2.5">{inspection.venue || inspection.location || '—'}</td>
+                    <tr className={part1RowClass(part1Changed('venue', 'location'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        16. Venue
+                        {part1Changed('venue', 'location') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {inspection.venue || inspection.location || '—'}
+                        <Part1RowEditNote changes={part1Notes('venue', 'location')} />
+                      </td>
                     </tr>
                     {/* Row 17: Inspection Date */}
-                    <tr>
-                      <td className="bg-muted/50 px-4 py-2.5 font-medium">17. Inspection Date</td>
+                    <tr className={part1RowClass(part1Changed('inspection_date_from', 'inspection_date_to', 'inspection_datetime'))}>
+                      <td className="bg-muted/50 px-4 py-2.5 font-medium">
+                        17. Inspection Date
+                        {part1Changed('inspection_date_from', 'inspection_date_to', 'inspection_datetime') && (
+                          <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         {inspection.inspection_date_from || inspection.inspection_datetime ? (
                           <div className="flex flex-wrap items-center gap-2">
@@ -2034,6 +2393,7 @@ export default function InspectionDetailPage() {
                             )}
                           </div>
                         ) : '—'}
+                        <Part1RowEditNote changes={part1Notes('inspection_date_from', 'inspection_date_to', 'inspection_datetime')} />
                       </td>
                     </tr>
                   </tbody>
@@ -2041,9 +2401,15 @@ export default function InspectionDetailPage() {
               </div>
 
               {inspection.description && (
-                <div className="mt-4 p-3 bg-muted/30 rounded-lg">
-                  <Label className="text-muted-foreground text-xs">Additional Notes</Label>
+                <div className={`mt-4 p-3 rounded-lg ${part1Changed('description') ? 'bg-amber-50/90 border border-amber-200 dark:bg-amber-950/20 dark:border-amber-800' : 'bg-muted/30'}`}>
+                  <Label className="text-muted-foreground text-xs">
+                    Additional Notes
+                    {part1Changed('description') && (
+                      <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0">Updated</Badge>
+                    )}
+                  </Label>
                   <p className="mt-1 text-sm">{inspection.description}</p>
+                  <Part1RowEditNote changes={part1Notes('description')} />
                 </div>
               )}
             </CardContent>
@@ -2051,9 +2417,14 @@ export default function InspectionDetailPage() {
 
           {/* Document Details (18-19) */}
           {inspection.document_details && Object.keys(parseJsonObj(inspection.document_details)).length > 0 && (
-            <Card>
+            <Card className={part1Changed('document_details') ? 'ring-1 ring-amber-300 dark:ring-amber-700' : undefined}>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">18–19. Document Reference Details</CardTitle>
+                <CardTitle className="text-lg">
+                  18–19. Document Reference Details
+                  {part1Changed('document_details') && (
+                    <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0 align-middle">Updated</Badge>
+                  )}
+                </CardTitle>
                 <CardDescription>Approved document numbers, revisions, and dates</CardDescription>
               </CardHeader>
               <CardContent>
@@ -2095,49 +2466,86 @@ export default function InspectionDetailPage() {
                     </tbody>
                   </table>
                 </div>
+                <Part1RowEditNote changes={part1Notes('document_details')} />
               </CardContent>
             </Card>
           )}
 
           {/* Confirmations */}
           {inspection.confirmations && Object.keys(parseJsonObj(inspection.confirmations)).length > 0 && (
-            <Card>
+            <Card className={part1Changed('confirmations') ? 'ring-1 ring-amber-300 dark:ring-amber-700' : undefined}>
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Confirmations</CardTitle>
+                <CardTitle className="text-lg">
+                  Confirmations
+                  {part1Changed('confirmations') && (
+                    <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0 align-middle">Updated</Badge>
+                  )}
+                </CardTitle>
                 <CardDescription>Pre-inspection confirmations by the designer</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="border rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
                     <tbody className="divide-y">
-                      {Object.entries(parseJsonObj(inspection.confirmations)).map(([key, val]: [string, any]) => (
+                      {(() => {
+                        const conf = parseJsonObj(inspection.confirmations);
+                        const orderedKeys = [
+                          ...Object.keys(CONFIRMATION_LABELS).filter((k) => k in conf),
+                          ...Object.keys(conf).filter((k) => !(k in CONFIRMATION_LABELS)),
+                        ];
+                        return orderedKeys.map((key) => {
+                          const val = conf[key];
+                          const display =
+                            val === 'yes' ? 'Yes' :
+                            val === 'no' ? 'No' :
+                            val === 'open' ? 'Open' :
+                            val === 'closed' ? 'Closed' :
+                            val === 'na' || val === 'n/a' ? 'N/A' :
+                            String(val || '—');
+                          return (
                         <tr key={key}>
-                          <td className="px-4 py-2.5 flex-1">{CONFIRMATION_LABELS[key] || key}</td>
+                          <td className="px-4 py-2.5 flex-1">
+                            <div>{CONFIRMATION_LABELS[key] || key}</div>
+                            {key === 'instruments_available' && val === 'no' && (
+                              <p className="mt-1 text-xs font-semibold text-red-700">
+                                Note: Inspection stage may be liable for rejection
+                              </p>
+                            )}
+                          </td>
                           <td className="px-4 py-2.5 text-center w-[100px]">
                             <Badge
                               variant="outline"
                               className={
-                                val === 'yes' ? 'border-green-500 text-green-700 bg-green-50' :
+                                val === 'yes' || val === 'closed' ? 'border-green-500 text-green-700 bg-green-50' :
                                 val === 'no' ? 'border-red-500 text-red-700 bg-red-50' :
+                                val === 'open' ? 'border-amber-500 text-amber-700 bg-amber-50' :
                                 'border-gray-300 text-gray-500'
                               }
                             >
-                              {val === 'yes' ? 'Yes' : val === 'no' ? 'No' : 'N/A'}
+                              {display}
                             </Badge>
                           </td>
                         </tr>
-                      ))}
+                          );
+                        });
+                      })()}
                     </tbody>
                   </table>
                 </div>
+                <Part1RowEditNote changes={part1Notes('confirmations')} />
               </CardContent>
             </Card>
           )}
 
           {/* Designer & Certifier (20-21) */}
-          <Card>
+          <Card className={part1Changed('designer_rep_name', 'designer_rep_designation', 'designer_rep_contact', 'design_coordinator_name', 'certified_by_name', 'certified_by_designation', 'nominated_request_approver_id') ? 'ring-1 ring-amber-300 dark:ring-amber-700' : undefined}>
             <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Designer Representative & Certification</CardTitle>
+              <CardTitle className="text-lg">
+                Designer Representative & Certification
+                {part1Changed('designer_rep_name', 'designer_rep_designation', 'designer_rep_contact', 'design_coordinator_name', 'certified_by_name', 'certified_by_designation', 'nominated_request_approver_id') && (
+                  <Badge className="ml-2 bg-amber-500 text-white text-[10px] px-1.5 py-0 align-middle">Updated</Badge>
+                )}
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2152,8 +2560,8 @@ export default function InspectionDetailPage() {
                     <div>
                       <Label className="text-xs text-muted-foreground">Designation</Label>
                       <p className="font-medium">
-                        {inspection.initiator_scientist_rank?.trim() ||
-                          inspection.designer_rep_designation?.trim() ||
+                        {inspection.designer_rep_designation?.trim() ||
+                          inspection.initiator_scientist_rank?.trim() ||
                           '—'}
                       </p>
                     </div>
@@ -2187,9 +2595,11 @@ export default function InspectionDetailPage() {
                       return (
                         <div className="text-sm text-muted-foreground italic py-2">
                           {inspection.status === 'pending_request_approval' ? (
-                            <span className="text-amber-600 dark:text-amber-400">⏳ Pending Request Approver</span>
+                            <span className="text-amber-600 dark:text-amber-400">⏳ Pending Request Approver forward</span>
+                          ) : inspection.status === 'pending_part1_approval' ? (
+                            <span className="text-orange-600 dark:text-orange-400">⏳ Pending Part I approval</span>
                           ) : inspection.status === 'pending' || inspection.status === 'draft' ? (
-                            <span>Submit IR for approval to enable this section</span>
+                            <span>Submit IR for Request Approver forward to enable this section</span>
                           ) : (
                             <span>—</span>
                           )}
@@ -2227,10 +2637,15 @@ export default function InspectionDetailPage() {
                         </div>
                         {!isSignedOff && inspection.status === 'pending_request_approval' && (
                           <p className="text-xs text-amber-600 dark:text-amber-400 italic pt-2 border-t">
-                            ⏳ Pending Request Approver
+                            ⏳ Pending Request Approver forward
                           </p>
                         )}
-                        {isSignedOff && (
+                        {isSignedOff && inspection.status === 'pending_part1_approval' && (
+                          <p className="text-xs text-orange-600 dark:text-orange-400 italic pt-2 border-t">
+                            ⏳ Forwarded — pending Part I approval
+                          </p>
+                        )}
+                        {isSignedOff && inspection.status !== 'pending_part1_approval' && (
                           <p className="text-xs text-green-700 dark:text-green-400 italic pt-2 border-t">
                             It is certified that the above LRU/SRU/Assembly/Part/material is ready for Inspection / Testing.
                           </p>
@@ -2241,9 +2656,21 @@ export default function InspectionDetailPage() {
                 </div>
               </div>
 
+              <Part1RowEditNote
+                changes={part1Notes(
+                  'designer_rep_name',
+                  'designer_rep_designation',
+                  'designer_rep_contact',
+                  'design_coordinator_name',
+                  'certified_by_name',
+                  'certified_by_designation',
+                  'nominated_request_approver_id'
+                )}
+              />
+
               {/* Part I Summary */}
               <Separator />
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div>
                   <Label className="text-xs text-muted-foreground">Initiated By</Label>
                   <p className="font-medium">{inspection.initiator_name}</p>
@@ -2252,8 +2679,33 @@ export default function InspectionDetailPage() {
                   )}
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Due Date</Label>
-                  <p className="font-medium">{fmtDate(inspection.due_date)}</p>
+                  <Label className="text-xs text-muted-foreground">Part I forwarded to</Label>
+                  <p className="font-medium">
+                    {inspection.request_approver_name?.trim() ||
+                      inspection.nominated_request_approver_name?.trim() ||
+                      '—'}
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Part I approved by</Label>
+                  <p className="font-medium">
+                    {(() => {
+                      const st = String(inspection.status || '');
+                      if (st === 'pending_part1_approval') return 'Pending';
+                      if (
+                        [
+                          'pending',
+                          'draft',
+                          'pending_request_approval',
+                          'returned_to_designer',
+                          'rejected',
+                        ].includes(st)
+                      ) {
+                        return '—';
+                      }
+                      return inspection.part1_approved_by_name?.trim() || '—';
+                    })()}
+                  </p>
                 </div>
                 <div>
                   <Label className="text-xs text-muted-foreground">Created</Label>
@@ -2277,7 +2729,7 @@ export default function InspectionDetailPage() {
         </TabsContent>
 
         {/* ══════ Part II — R&QA Office Use (Section 22) ══════ */}
-        <TabsContent value="part2" className="space-y-4">
+        <TabsContent value="part2" id="inspection-tab-part2" className="space-y-4 scroll-mt-20">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Part II — R&QA Office Use</CardTitle>
@@ -2296,7 +2748,7 @@ export default function InspectionDetailPage() {
               <>
               {inspection.status === 'returned_to_designer' && (
                 <div className="mb-4 rounded-md border border-orange-200 bg-orange-50/80 px-3 py-2 text-sm text-orange-900 dark:border-orange-800 dark:bg-orange-950/25 dark:text-orange-200">
-                  This request is with the initiator for Part I corrections. After resubmit and Request Approver forward, QA Head will complete Part II again.
+                  This request is with the initiator for Part I corrections. After resubmit and Part I approval (1021), QA Head will complete Part II again.
                 </div>
               )}
               {(() => {
@@ -2354,7 +2806,8 @@ export default function InspectionDetailPage() {
                   qaApproverCanManageInspectors &&
                   inspAssigned &&
                   !!inspection.nominated_team_head_id &&
-                  ['assigned', 'in_progress'].includes(inspection.status);
+                  ['assigned', 'in_progress'].includes(inspection.status) &&
+                  !inspectionPart4Saved(inspection);
 
                 if (showPart2FirstFill) {
                   return (
@@ -2491,7 +2944,7 @@ export default function InspectionDetailPage() {
         </TabsContent>
 
         {/* ══════ Part III — ORDAQA (CABS Cell) Office Use (Section 23) ══════ */}
-        <TabsContent value="part3" className="space-y-4">
+        <TabsContent value="part3" id="inspection-tab-part3" className="space-y-4 scroll-mt-20">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Part III — ORDAQA (CABS Cell) Office Use</CardTitle>
@@ -2514,6 +2967,10 @@ export default function InspectionDetailPage() {
                 const isForwarded = isForwardedToOrdqa(inspection);
                 const showSection23 = part3Section23HasSavedData(inspection);
                 const canEditSection23 = canEditPart3Section23(inspection);
+                const canOrdaqaEdit =
+                  isForwarded &&
+                  canEditSection23 &&
+                  (permissions.isOrdaqaHead() || permissions.isAdmin());
 
                 if (!isForwarded && !showSection23) {
                   if (jointInspectionRequestedInPart1(inspection)) {
@@ -2537,7 +2994,8 @@ export default function InspectionDetailPage() {
                   }
                 }
 
-                if (isForwarded && canEditSection23 && (permissions.isOrdaqaHead() || permissions.isAdmin())) {
+                // First fill (nothing saved yet) — form only, like Fill Part II
+                if (canOrdaqaEdit && !showSection23) {
                   return (
                     <Part3AssignForm
                       inspection={inspection}
@@ -2548,6 +3006,7 @@ export default function InspectionDetailPage() {
                   );
                 }
 
+                // Saved summary + edit form below (ORDAQA Head), like Edit Part II for QA Head
                 if (showSection23 && (p3.memo_returned === 'yes' || isForwarded)) {
                   const memoReturnedToQa = p3.memo_returned === 'yes';
                   const delegationType = p3.delegation_type;
@@ -2556,7 +3015,7 @@ export default function InspectionDetailPage() {
                       ? (inspection.ordaqa_inspector_name || 'Delegated user')
                       : (inspection.ordaqa_inspector_name || 'ORDAQA Inspector');
                   return (
-                    <div className="space-y-6">
+                    <>
                       <Part3Section23Display data={p3} inspection={inspection} />
                       {memoReturnedToQa ? (
                         <div className="rounded-lg border border-dashed border-orange-200 bg-orange-50/50 p-4 text-sm text-muted-foreground dark:border-orange-900 dark:bg-orange-950/30">
@@ -2566,7 +3025,7 @@ export default function InspectionDetailPage() {
                           </p>
                         </div>
                       ) : isForwarded && inspection.ordaqa_inspector_id ? (
-                        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground mb-4">
                           <p className="font-medium text-foreground">Sections 24–25 (Part V)</p>
                           <p className="mt-1">
                             After <strong>Part IV</strong> is saved, the assignee ({personLabel}) completes Sections{' '}
@@ -2574,7 +3033,25 @@ export default function InspectionDetailPage() {
                           </p>
                         </div>
                       ) : null}
-                    </div>
+
+                      {canOrdaqaEdit && (
+                        <>
+                          <Separator className="my-4" />
+                          <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2 mb-3">
+                            <p className="text-sm font-medium text-foreground">Edit Section 23 (ORDAQA Head)</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Update ORDAQA comments, received date/time, memo return, and assignee.
+                            </p>
+                          </div>
+                          <Part3AssignForm
+                            inspection={inspection}
+                            inspectionId={inspection.id}
+                            onComplete={fetchInspection}
+                            onSuccess={(msg) => showMessage('success', msg)}
+                          />
+                        </>
+                      )}
+                    </>
                   );
                 }
 
@@ -2614,7 +3091,7 @@ export default function InspectionDetailPage() {
         </TabsContent>
 
         {/* ══════ Part IV — CABS R&QA Inspection Report (Sections 26-29) ══════ */}
-        <TabsContent value="part4" className="space-y-4">
+        <TabsContent value="part4" id="inspection-tab-part4" className="space-y-4 scroll-mt-20">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Part IV — CABS R&QA Inspection Report</CardTitle>
@@ -2640,6 +3117,11 @@ export default function InspectionDetailPage() {
                   permissions.userId,
                   permissions.userRole
                 );
+                const canThEditP4 = canUserTeamHeadEditPart4(
+                  inspection,
+                  permissions.userId,
+                  permissions.userRole
+                );
 
                 if (p4Pending) {
                   return (
@@ -2647,7 +3129,7 @@ export default function InspectionDetailPage() {
                       <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                         Part IV submitted — awaiting Team Head – QA approval.
                       </div>
-                      <Part4Display inspection={inspection} />
+                      <Part4Display inspection={inspection} canEditObservations={canThApproveP4} />
                       <div className="flex flex-wrap gap-2">
                         {canThApproveP4 && (
                           <>
@@ -2669,6 +3151,23 @@ export default function InspectionDetailPage() {
                           </>
                         )}
                       </div>
+                      {canThEditP4 && (
+                        <>
+                          <Separator className="my-2" />
+                          <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2 mb-3">
+                            <p className="text-sm font-medium text-foreground">Edit Part IV (Team Head – QA)</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Update the R&amp;QA inspection report, then Approve or Reject Part IV.
+                            </p>
+                          </div>
+                          <Part4Form
+                            inspection={inspection}
+                            onComplete={fetchInspection}
+                            onSuccess={(msg) => showMessage('success', msg)}
+                            submitLabel="Save Part IV updates"
+                          />
+                        </>
+                      )}
                     </div>
                   );
                 }
@@ -2695,12 +3194,27 @@ export default function InspectionDetailPage() {
                     </div>
                   );
                 }
-                if (inspection.part4_data) {
+                if (inspectionPart4Saved(inspection)) {
                   return (
                     <div className="space-y-4">
                       {p4Approved && (
                         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
-                          Part IV approved by Team Head – QA.
+                          {(() => {
+                            const th = resolvePart4TeamHeadSignoff(inspection);
+                            return (
+                              <>
+                                <span className="font-medium">Approved by Team Head – QA:</span>{' '}
+                                {th.name || '—'}
+                                {th.designation ? ` (${th.designation})` : ''}
+                                {th.approvedAt && (
+                                  <span className="text-emerald-800/80 dark:text-emerald-300/90">
+                                    {' '}
+                                    · {fmtDate(th.approvedAt)}
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       )}
                       <Part4Display inspection={inspection} />
@@ -2727,9 +3241,11 @@ export default function InspectionDetailPage() {
                         ? permissions.userRole === 'inspector'
                           ? 'Part IV opens after Request Approver forward (Forwarded status)'
                           : 'Only an R&QA Inspector can fill Part IV when joint inspection was not requested in Part I'
-                        : hasInspectorsAssignedInsp(inspection)
-                          ? 'Only inspectors assigned in Part II can fill or update Part IV'
-                          : 'Inspector(s) must be assigned via Part II first'}
+                        : isAssignedInspector
+                          ? 'You are assigned, but Part IV cannot be edited in the current status. Refresh the page or contact support if this persists.'
+                          : hasInspectorsAssignedInsp(inspection)
+                            ? 'Only inspectors assigned in Part II (shown above) can fill Part IV. Sign in as an assigned R&QA Inspector.'
+                            : 'Inspector(s) must be assigned via Part II first'}
                     </p>
                   </div>
                 );
@@ -2753,10 +3269,10 @@ export default function InspectionDetailPage() {
                       )}
                     </div>
                     </>
-                  ) : inspection.status === 'inspection_completed' ? (
+                  ) : inspectionReadyForFinalTeamHeadApproval(inspection) ? (
                     <p className="text-sm text-amber-800 dark:text-amber-200">
                       Awaiting <strong>Team Head – QA</strong> (R&amp;QA department, qa_approver role) to Approve &amp;
-                      Close or Reject with a comment after inspection is completed.
+                      Close or Reject with a comment.
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground italic">TH - QA Final Sign-off pending</p>
@@ -2781,18 +3297,24 @@ export default function InspectionDetailPage() {
               {(() => {
                 const needsP5 = inspectionRequiresOrdqaPart5(inspection);
                 const p3 = parseJsonObj(inspection.part3_data);
-                const isAssignedOrInProgress = ['assigned', 'in_progress'].includes(inspection.status);
+                const canFillP5 = canUserUpdatePart5(
+                  inspection,
+                  permissions.userId,
+                  permissions.userRole
+                );
                 const hasAssignedPerson =
                   inspection.ordaqa_inspector_id != null &&
                   String(inspection.ordaqa_inspector_id).trim() !== '';
                 const isAssignedPerson =
-                  Number(inspection.ordaqa_inspector_id) === permissions.userId && permissions.userId > 0;
+                  hasAssignedPerson &&
+                  Number(inspection.ordaqa_inspector_id) === Number(permissions.userId) &&
+                  Number(permissions.userId) > 0;
                 const p5Submitted = ordqaPart5Submitted(inspection);
                 const p5Approved = ordqaPart5Approved(inspection);
 
                 if (!needsP5 || inspectionSkipsPart2Part3(inspection)) {
                   return (
-                    <div className="text-center py-8 text-muted-foreground">
+                    <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Part V — Not Applicable</p>
                       <p className="text-sm mt-1">
                         {inspectionSkipsPart2Part3(inspection)
@@ -2805,7 +3327,7 @@ export default function InspectionDetailPage() {
 
                 if (!inspectionPart4Saved(inspection)) {
                   return (
-                    <div className="text-center py-8 text-muted-foreground">
+                    <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Complete Part IV first</p>
                       <p className="text-sm mt-1">
                         Sections 24–25 are filled after the R&amp;QA inspection report (Part IV) is saved.
@@ -2816,7 +3338,7 @@ export default function InspectionDetailPage() {
 
                 if (!part4ApprovedByTeamHead(inspection)) {
                   return (
-                    <div className="text-center py-8 text-muted-foreground">
+                    <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">
                         {part4PendingTeamHeadApproval(inspection)
                           ? 'Awaiting Team Head – QA approval of Part IV'
@@ -2866,7 +3388,8 @@ export default function InspectionDetailPage() {
                   );
                 }
 
-                if (hasAssignedPerson && isAssignedOrInProgress && (isAssignedPerson || permissions.isAdmin())) {
+                // Ready to fill — assigned ORDAQA person / admin
+                if (canFillP5 || isAssignedPerson) {
                   const p5Returned = ordqaPart5ReturnedToInspector(inspection);
                   const p5ReturnComment = getPart5HeadSendBackComment(inspection);
                   return (
@@ -2882,12 +3405,17 @@ export default function InspectionDetailPage() {
                           </p>
                         </div>
                       )}
-                      <Part5Form inspection={inspection} inspectionId={inspection.id} onComplete={fetchInspection} />
+                      <Part5Form
+                        key={`part5-form-${inspection.id}`}
+                        inspection={inspection}
+                        inspectionId={inspection.id}
+                        onComplete={fetchInspection}
+                      />
                     </div>
                   );
                 }
 
-                if (hasAssignedPerson && isAssignedOrInProgress) {
+                if (hasAssignedPerson) {
                   const delegationType = p3.delegation_type;
                   const personLabel =
                     delegationType === 'delegated'
@@ -2897,14 +3425,19 @@ export default function InspectionDetailPage() {
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Sections 24–25 — Awaiting assignee</p>
                       <p className="text-sm mt-1">Assigned to: {personLabel}</p>
+                      <p className="text-xs mt-2">
+                        Only the assigned ORDAQA Inspector can fill Part V.
+                      </p>
                     </div>
                   );
                 }
 
                 return (
-                  <div className="text-center py-8 text-muted-foreground">
+                  <div className="text-center py-8 text-muted-foreground border rounded-lg">
                     <p className="font-medium">Part V is not yet available</p>
-                    <p className="text-sm mt-1">Part III Section 23 and assignee must be set first.</p>
+                    <p className="text-sm mt-1">
+                      ORDAQA Head must complete Part III Section 23 and assign an ORDAQA Inspector first.
+                    </p>
                   </div>
                 );
               })()}
@@ -3003,11 +3536,17 @@ export default function InspectionDetailPage() {
         <TabsContent value="attachments" className="space-y-4">
           {(() => {
             const irCompleted = ['completed', 'closed'].includes(inspection.status);
-            const isAssignedInspector = permissions.isInspector() && (
-              Number(inspection.inspector_id) === permissions.userId ||
-              Number(inspection.ordaqa_inspector_id) === permissions.userId
-            );
-            const canManageAttachments = isAssignedInspector && !irCompleted;
+            // Inspectors (R&QA and ORDAQA) — view/download only; no upload/delete on IR attachments
+            const isInspectorRole =
+              permissions.userRole === 'inspector' ||
+              permissions.userRole === 'ordaqa_inspector';
+            const canManageAttachments =
+              !isInspectorRole &&
+              !irCompleted &&
+              (permissions.isAdmin() ||
+                (permissions.isInitiator() &&
+                  inspection.initiator_id != null &&
+                  Number(inspection.initiator_id) === permissions.userId));
             return (
           <Card>
             <CardHeader>
@@ -3019,7 +3558,9 @@ export default function InspectionDetailPage() {
                       ? 'Photos, documents, and evidence files (max 10 MB each)'
                       : irCompleted
                         ? 'This IR is completed — attachments are read-only'
-                        : 'Only the assigned inspector can upload attachments'}
+                        : isInspectorRole
+                          ? 'View and download only'
+                          : 'Attachments are read-only for your role'}
                   </CardDescription>
                 </div>
                 {canManageAttachments && (
@@ -3065,11 +3606,6 @@ export default function InspectionDetailPage() {
                             <Download className="h-4 w-4" />
                           </a>
                         </Button>
-                        {canManageAttachments && (
-                        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => handleDeleteAttachment(attachment.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                        )}
                       </div>
                     </div>
                   ))}
@@ -3100,7 +3636,14 @@ export default function InspectionDetailPage() {
             <CardContent>
               {inspection.activities.length > 0 ? (
                 <div className="space-y-4">
-                  {inspection.activities.map((activity) => (
+                  {inspection.activities.map((activity) => {
+                    const isPart1EditActivity = activity.activity_type === 'part1_edited';
+                    // Hide detailed field diffs from non-initiators
+                    const activityDescription =
+                      isPart1EditActivity && !canSeePart1CertifierEdits
+                        ? 'Part I was updated by Request Approver.'
+                        : activity.description;
+                    return (
                     <div key={activity.id} className="flex gap-3">
                       <div className="flex flex-col items-center">
                         <div className="p-2 bg-primary/10 rounded-full">
@@ -3109,9 +3652,11 @@ export default function InspectionDetailPage() {
                         <div className="w-px h-full bg-border mt-2"></div>
                       </div>
                       <div className="flex-1 pb-6">
-                        <div className="flex items-center gap-2 mb-1">
-                          <p className="font-semibold text-sm">{activity.description}</p>
-                          <Badge variant="secondary" className="text-xs">
+                        <div className="flex items-start gap-2 mb-1">
+                          <p className="font-semibold text-sm whitespace-pre-wrap flex-1">
+                            {activityDescription}
+                          </p>
+                          <Badge variant="secondary" className="text-xs shrink-0">
                             {activity.activity_type}
                           </Badge>
                         </div>
@@ -3120,7 +3665,8 @@ export default function InspectionDetailPage() {
                         </p>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-8">
@@ -3822,22 +4368,28 @@ function Part2Step1Form({
   const blockReturnToDesigner = inspection != null && inspection.status !== 'request_approved';
 
   const handleSubmit = async () => {
-    if (!form.nominated_team_head_id) return alert('Please select a Team Head - QA');
     const returnChoice = blockReturnToDesigner ? 'no' : form.return_to_designer;
+    if (returnChoice !== 'yes' && !form.nominated_team_head_id) {
+      return alert('Please select a Team Head - QA');
+    }
     if (returnChoice === 'yes' && !form.head_rqa_comments.trim()) {
       return alert('Head R&QA comments are required when returning the inspection request to the designer');
     }
     setLoading(true);
     try {
-      const pickId = parseInt(form.nominated_team_head_id, 10);
+      const pickId = form.nominated_team_head_id
+        ? parseInt(form.nominated_team_head_id, 10)
+        : null;
       const selectedTH =
-        teamHeads.find((u) => u.id === pickId) ?? users.find((u) => u.id === pickId);
+        pickId != null && Number.isFinite(pickId)
+          ? teamHeads.find((u) => u.id === pickId) ?? users.find((u) => u.id === pickId)
+          : undefined;
       const res = await fetch(`/api/inspection-requests/${inspectionId}/workflow`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'save_part2_step1',
-          nominated_team_head_id: pickId,
+          nominated_team_head_id: returnChoice === 'yes' ? (pickId || null) : pickId,
           forward_to_ordaqa: returnChoice === 'yes' ? false : form.forward_to_dgaqa,
           part2_notes: form.head_rqa_comments,
           part2_data: {
@@ -3868,7 +4420,7 @@ function Part2Step1Form({
   const sel = "w-full px-3 py-2 text-sm rounded-md border border-input bg-background";
 
   return (
-    <div className="space-y-5">
+    <div id="part2-fill-form" className="space-y-5 scroll-mt-20">
       <Dialog open={forwardSuccessOpen} onOpenChange={setForwardSuccessOpen}>
         <DialogContent className="sm:max-w-md border-green-200 dark:border-green-800">
           <DialogHeader>
@@ -3956,10 +4508,18 @@ function Part2Step1Form({
       </div>
 
       <Separator />
-      <h4 className="font-semibold text-sm text-muted-foreground">Nominated Officer/Staff for the Job</h4>
+      <h4 className="font-semibold text-sm text-muted-foreground">
+        Nominated Officer/Staff for the Job
+        {form.return_to_designer === 'yes' && !blockReturnToDesigner ? (
+          <span className="font-normal text-muted-foreground"> (optional when returning to designer)</span>
+        ) : null}
+      </h4>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label>Team Head - QA *</Label>
+        <div className={`space-y-2 ${form.return_to_designer === 'yes' && !blockReturnToDesigner ? 'opacity-70' : ''}`}>
+          <Label>
+            Team Head - QA
+            {form.return_to_designer === 'yes' && !blockReturnToDesigner ? '' : ' *'}
+          </Label>
           <select
             value={form.nominated_team_head_id}
             onChange={e => setForm({ ...form, nominated_team_head_id: e.target.value })}
@@ -3974,10 +4534,23 @@ function Part2Step1Form({
           {lockTeamHeadSelection && (
             <p className="text-xs text-muted-foreground">Nominated Team Head is fixed while inspectors are assigned.</p>
           )}
+          {form.return_to_designer === 'yes' && !blockReturnToDesigner && (
+            <p className="text-xs text-muted-foreground">
+              Not required when returning the inspection request to the designer.
+            </p>
+          )}
         </div>
       </div>
 
-      <Button onClick={handleSubmit} disabled={loading || !form.nominated_team_head_id} className="mt-4">
+      <Button
+        onClick={handleSubmit}
+        disabled={
+          loading ||
+          (form.return_to_designer !== 'yes' && !form.nominated_team_head_id) ||
+          (form.return_to_designer === 'yes' && !blockReturnToDesigner && !form.head_rqa_comments.trim())
+        }
+        className="mt-4"
+      >
         {loading
           ? 'Saving...'
           : form.return_to_designer === 'yes' && !blockReturnToDesigner
@@ -4610,7 +5183,7 @@ function Part3AssignForm({
     (memoReturnYes || (delegationType !== null && !!assigneeUserId));
 
   return (
-    <div className="space-y-4">
+    <div id="part3-fill-form" className="space-y-4 scroll-mt-20">
       {saveMsg && (
         <div
           className={`px-3 py-2 rounded-md text-sm border ${
@@ -4741,13 +5314,12 @@ function Part3AssignForm({
       <div className="mt-2 space-y-2">
         <Label>Name of Oi/c ORDAQA CABS Cell</Label>
         <Input
-          value={form.oic_ordaqa_name || loggedInOicName}
-          readOnly
-          className="bg-muted/40 cursor-default"
-          title="Filled from your logged-in account"
+          value={form.oic_ordaqa_name}
+          onChange={(e) => setForm({ ...form, oic_ordaqa_name: e.target.value })}
+          placeholder={loggedInOicName || 'Oi/c name...'}
         />
         <p className="text-xs text-muted-foreground">
-          Read-only: taken from your profile name (logged-in user).
+          Defaults from your profile name; you can edit if needed.
         </p>
       </div>
 
@@ -5007,7 +5579,7 @@ function Part5Form({
       </p>
 
       <Button onClick={handleSubmit} disabled={loading} className="mt-2">
-        {loading ? 'Saving...' : 'Save Part V (Sections 24–25)'}
+        {loading ? 'Submitting...' : 'Submit Part V for ORDAQA Head Approval'}
       </Button>
     </div>
   );
@@ -5017,7 +5589,13 @@ function Part5Form({
    Part IV — CABS R&QA Inspection Report  (Sections 26-29)
    ═══════════════════════════════════════════════════════ */
 
-function Part4Display({ inspection }: { inspection: InspectionRequest }) {
+function Part4Display({
+  inspection,
+  canEditObservations = false,
+}: {
+  inspection: InspectionRequest;
+  canEditObservations?: boolean;
+}) {
   const d = parseJsonObj(inspection.part4_data);
   const assignedInspectors = resolveAssignedInspectorsForDisplay(inspection);
   const { statusMap: threadStatus, refresh: refreshThreadStatus } = useObservationThreadStatus(inspection.id, true);
@@ -5167,6 +5745,7 @@ function Part4Display({ inspection }: { inspection: InspectionRequest }) {
                       requestNumber={inspection.request_number}
                       initiatorName={inspection.initiator_name}
                       canClose={false}
+                      canEdit={canEditObservations}
                       threadMeta={chatKey ? threadStatus[chatKey] : null}
                       onRefreshThreadStatus={refreshThreadStatus}
                     />
@@ -5220,28 +5799,32 @@ function Part4Display({ inspection }: { inspection: InspectionRequest }) {
             <tr>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Signature/Seal of Team Head</td>
               <td className="px-4 py-2.5">
-                {teamHeadFinalSignoffApproved(inspection) && inspection.final_qa_approver_name ? (
-                  <div className="flex items-center gap-3">
-                    <div>
-                      <strong>{inspection.final_qa_approver_name}</strong>
-                      {inspection.final_qa_approver_designation && (
-                        <span className="text-muted-foreground ml-1">({inspection.final_qa_approver_designation})</span>
+                {(() => {
+                  const th = resolvePart4TeamHeadSignoff(inspection);
+                  if (!th.approved) {
+                    return (
+                      <span className="text-muted-foreground italic text-sm">Pending Team Head approval</span>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <strong>{th.name}</strong>
+                        {th.designation && (
+                          <span className="text-muted-foreground ml-1">({th.designation})</span>
+                        )}
+                      </div>
+                      {th.signaturePath ? (
+                        <img src={th.signaturePath} alt="Team Head Signature" className="h-10 object-contain" />
+                      ) : (
+                        <span className="text-green-700 dark:text-green-400 italic text-xs">✓ Signed</span>
+                      )}
+                      {th.approvedAt && (
+                        <span className="text-muted-foreground text-xs">{fmtDate(th.approvedAt)}</span>
                       )}
                     </div>
-                    {inspection.final_qa_approver_signature_path ? (
-                      <img src={inspection.final_qa_approver_signature_path} alt="Team Head Signature" className="h-10 object-contain" />
-                    ) : (
-                      <span className="text-green-700 dark:text-green-400 italic text-xs">✓ Signed</span>
-                    )}
-                    {inspection.final_qa_approval_date && (
-                      <span className="text-muted-foreground text-xs">
-                        {fmtDate(inspection.final_qa_approval_date)}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-muted-foreground italic text-sm">Pending Team Head approval</span>
-                )}
+                  );
+                })()}
               </td>
             </tr>
           </tbody>
@@ -5261,10 +5844,12 @@ function Part4Form({
   inspection,
   onComplete,
   onSuccess,
+  submitLabel,
 }: {
   inspection: InspectionRequest;
   onComplete: () => Promise<void> | void;
   onSuccess?: (message: string) => void;
+  submitLabel?: string;
 }) {
   const { data: session } = useSession();
   const signerName = session?.user?.name?.trim() || '';
@@ -5319,11 +5904,29 @@ function Part4Form({
   };
   const removeRemarkRow = (i: number) => setForm({...form, part4_remarks: form.part4_remarks.filter((_, idx) => idx !== i)});
 
+  /** Allow only empty or non-negative integer strings (blocks "-", "-1", etc.). */
+  const sanitizeNonNegativeInt = (raw: string): string => {
+    if (raw === '') return '';
+    const digits = raw.replace(/[^\d]/g, '');
+    if (digits === '') return '';
+    return String(parseInt(digits, 10));
+  };
+
   const validatePart4 = () => {
     const errors: Record<string, string> = {};
     if (!form.inspection_details.trim()) errors.inspection_details = '26. Details of Inspection / Test is required';
-    if (!form.items_offered || parseInt(form.items_offered) < 0) errors.items_offered = '27. No. of Items Offered is required';
-    if (!form.items_accepted && form.items_accepted !== '0') errors.items_accepted = '27. No. of Items Accepted is required';
+    if (form.items_offered === '' || Number.isNaN(parseInt(form.items_offered, 10)) || parseInt(form.items_offered, 10) < 0) {
+      errors.items_offered = '27. No. of Items Offered must be 0 or greater';
+    }
+    if (form.items_accepted === '' || Number.isNaN(parseInt(form.items_accepted, 10)) || parseInt(form.items_accepted, 10) < 0) {
+      errors.items_accepted = '27. No. of Items Accepted must be 0 or greater';
+    }
+    if (
+      form.observations_count !== '' &&
+      (Number.isNaN(parseInt(form.observations_count, 10)) || parseInt(form.observations_count, 10) < 0)
+    ) {
+      errors.observations_count = '27. Observations must be 0 or greater';
+    }
     if (!form.verification_logbook) errors.verification_logbook = '28(a). Verification of observations in log book is required';
     if (!form.instruments_calibration) errors.instruments_calibration = '28(b). Instruments/Test Facilities calibration details is required';
     if (!form.logbook_copy_attached) errors.logbook_copy_attached = '28(c). Copy of log book entries attached is required';
@@ -5400,7 +6003,7 @@ function Part4Form({
   const sel = "w-full px-3 py-2 text-sm rounded-md border border-input bg-background";
 
   return (
-    <div className="space-y-6">
+    <div id="part4-fill-form" className="space-y-6 scroll-mt-20">
       {saveMsg && (
         <div className="px-3 py-2 rounded-md border text-sm bg-red-50 border-red-200 text-red-800 dark:bg-red-900/30 dark:border-red-800 dark:text-red-300">
           {saveMsg}
@@ -5436,39 +6039,93 @@ function Part4Form({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="space-y-2">
           <Label>Items Offered *</Label>
-          <Input type="number" min="0" value={form.items_offered} onChange={e => {
-            const offered = e.target.value;
-            const accepted = parseInt(form.items_accepted) || 0;
-            const offeredNum = parseInt(offered) || 0;
-            const newAccepted = accepted > offeredNum ? String(offeredNum) : form.items_accepted;
-            const rejected = offeredNum - (parseInt(newAccepted) || 0);
-            setForm({...form, items_offered: offered, items_accepted: newAccepted, items_rejected: rejected >= 0 ? String(rejected) : '0'});
-            setFieldErrors(prev => ({...prev, items_offered: ''}));
-          }} placeholder="0" className={fieldErrors.items_offered ? 'border-red-500' : ''} />
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            inputMode="numeric"
+            value={form.items_offered}
+            onKeyDown={(e) => {
+              if (e.key === '-' || e.key === 'e' || e.key === 'E' || e.key === '+') e.preventDefault();
+            }}
+            onChange={(e) => {
+              const offered = sanitizeNonNegativeInt(e.target.value);
+              const accepted = parseInt(form.items_accepted, 10) || 0;
+              const offeredNum = parseInt(offered, 10) || 0;
+              const newAccepted = accepted > offeredNum ? String(offeredNum) : form.items_accepted;
+              const rejected = offeredNum - (parseInt(newAccepted, 10) || 0);
+              setForm({
+                ...form,
+                items_offered: offered,
+                items_accepted: newAccepted,
+                items_rejected: rejected >= 0 ? String(rejected) : '0',
+              });
+              setFieldErrors((prev) => ({ ...prev, items_offered: '' }));
+            }}
+            placeholder="0"
+            className={fieldErrors.items_offered ? 'border-red-500' : ''}
+          />
           {fieldErrors.items_offered && <p className="text-xs text-red-500">{fieldErrors.items_offered}</p>}
         </div>
         <div className="space-y-2">
           <Label>Accepted *</Label>
-          <Input type="number" min="0" max={form.items_offered || undefined} value={form.items_accepted} onChange={e => {
-            const accepted = e.target.value;
-            const offeredNum = parseInt(form.items_offered) || 0;
-            const acceptedNum = parseInt(accepted) || 0;
-            if (acceptedNum > offeredNum && offeredNum > 0) return;
-            const rejected = offeredNum - acceptedNum;
-            setForm({...form, items_accepted: accepted, items_rejected: rejected >= 0 ? String(rejected) : '0'});
-            setFieldErrors(prev => ({...prev, items_accepted: ''}));
-          }} placeholder="0" className={fieldErrors.items_accepted ? 'border-red-500' : ''} />
-          {parseInt(form.items_accepted) > parseInt(form.items_offered) && parseInt(form.items_offered) > 0 && (
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            max={form.items_offered || undefined}
+            inputMode="numeric"
+            value={form.items_accepted}
+            onKeyDown={(e) => {
+              if (e.key === '-' || e.key === 'e' || e.key === 'E' || e.key === '+') e.preventDefault();
+            }}
+            onChange={(e) => {
+              const accepted = sanitizeNonNegativeInt(e.target.value);
+              const offeredNum = parseInt(form.items_offered, 10) || 0;
+              const acceptedNum = parseInt(accepted, 10) || 0;
+              if (acceptedNum > offeredNum && offeredNum > 0) return;
+              const rejected = offeredNum - acceptedNum;
+              setForm({
+                ...form,
+                items_accepted: accepted,
+                items_rejected: rejected >= 0 ? String(rejected) : '0',
+              });
+              setFieldErrors((prev) => ({ ...prev, items_accepted: '' }));
+            }}
+            placeholder="0"
+            className={fieldErrors.items_accepted ? 'border-red-500' : ''}
+          />
+          {fieldErrors.items_accepted && <p className="text-xs text-red-500">{fieldErrors.items_accepted}</p>}
+          {parseInt(form.items_accepted, 10) > parseInt(form.items_offered, 10) &&
+            parseInt(form.items_offered, 10) > 0 && (
             <p className="text-xs text-red-500">Accepted cannot exceed items offered</p>
           )}
         </div>
         <div className="space-y-2">
           <Label>Observations</Label>
-          <Input type="number" value={form.observations_count} onChange={e => setForm({...form, observations_count: e.target.value})} placeholder="0" />
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            inputMode="numeric"
+            value={form.observations_count}
+            onKeyDown={(e) => {
+              if (e.key === '-' || e.key === 'e' || e.key === 'E' || e.key === '+') e.preventDefault();
+            }}
+            onChange={(e) => {
+              setForm({ ...form, observations_count: sanitizeNonNegativeInt(e.target.value) });
+              setFieldErrors((prev) => ({ ...prev, observations_count: '' }));
+            }}
+            placeholder="0"
+            className={fieldErrors.observations_count ? 'border-red-500' : ''}
+          />
+          {fieldErrors.observations_count && (
+            <p className="text-xs text-red-500">{fieldErrors.observations_count}</p>
+          )}
         </div>
         <div className="space-y-2">
           <Label>Rejected</Label>
-          <Input type="number" value={form.items_rejected} readOnly className="bg-muted/50" placeholder="0" />
+          <Input type="number" min={0} value={form.items_rejected} readOnly className="bg-muted/50" placeholder="0" />
           <p className="text-xs text-muted-foreground">Auto: Offered − Accepted</p>
         </div>
       </div>
@@ -5694,28 +6351,34 @@ function Part4Form({
         ))}
         <div className="space-y-2">
           <Label>Signature/Seal of Team Head</Label>
-          {teamHeadFinalSignoffApproved(inspection) && inspection.final_qa_approver_name ? (
-            <Input
-              value={`${inspection.final_qa_approver_name}${inspection.final_qa_approver_designation ? ` (${inspection.final_qa_approver_designation})` : ''}`}
-              readOnly
-              className="bg-muted/50"
-            />
-          ) : (
-            <p className="text-sm text-muted-foreground italic py-2">Pending Team Head approval</p>
-          )}
+          {(() => {
+            const th = resolvePart4TeamHeadSignoff(inspection);
+            if (th.approved) {
+              return (
+                <Input
+                  value={`${th.name}${th.designation ? ` (${th.designation})` : ''}`}
+                  readOnly
+                  className="bg-muted/50"
+                />
+              );
+            }
+            return (
+              <p className="text-sm text-muted-foreground italic py-2">Pending Team Head approval</p>
+            );
+          })()}
         </div>
       </div>
       <p className="text-xs text-muted-foreground italic">
-        Inspector names from Part II. Team Head name appears after Approve &amp; Close.
+        Inspector names from Part II. Team Head name appears after Part IV Team Head approval.
       </p>
 
       <Button onClick={handleSubmit} disabled={loading} className="mt-2">
         {loading
-          ? 'Submitting...'
-          : part4RejectedByTeamHead(inspection)
-            ? 'Resubmit Part IV for Team Head Approval'
-            : inspectionPart4Saved(inspection)
-              ? 'Submit Part IV for Team Head Approval'
+          ? 'Saving...'
+          : submitLabel
+            ? submitLabel
+            : part4RejectedByTeamHead(inspection)
+              ? 'Resubmit Part IV for Team Head Approval'
               : 'Submit Part IV for Team Head Approval'}
       </Button>
     </div>

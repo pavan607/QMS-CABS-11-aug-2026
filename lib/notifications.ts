@@ -1,4 +1,7 @@
 import pool from './db';
+import { normalizeEmployeeId } from './employee-id';
+import { PART1_APPROVER_EMPLOYEE_ID } from './part1-approver';
+
 
 export type NotificationType =
   | 'info'
@@ -179,7 +182,16 @@ export async function notifyInspectionRequestSubmitted(
     nominatedRequestApproverId !== initiatorId
   ) {
     const appr = await pool.query(
-      `SELECT id FROM users WHERE id = $1 AND role = 'request_approver' AND COALESCE(status, 'active') = 'active'`,
+      `SELECT id FROM users u
+       WHERE u.id = $1
+         AND COALESCE(u.status, 'active') = 'active'
+         AND (
+           u.role = 'request_approver'
+           OR (
+             u.role = 'initiator'
+             AND UPPER(TRIM(COALESCE(u.designation, ''))) = 'DH'
+           )
+         )`,
       [nominatedRequestApproverId]
     );
     if (appr.rows[0]) {
@@ -200,6 +212,38 @@ export async function notifyInspectionRequestSubmitted(
 }
 
 /**
+ * When a nominated field-21 certifier (e.g. DH + Initiator/Designer) edits Part I,
+ * notify the original initiator/designer with the list of changed fields.
+ */
+export async function notifyInitiatorPart1EditedByCertifier(
+  requestId: number,
+  requestNumber: string,
+  initiatorId: number | null | undefined,
+  editorUserId: number,
+  editorName: string,
+  changedFieldsSummary?: string
+): Promise<void> {
+  if (initiatorId == null || !Number.isFinite(Number(initiatorId)) || Number(initiatorId) < 1) {
+    return;
+  }
+  if (Number(initiatorId) === editorUserId) return;
+
+  const by = editorName.trim() || 'Request Approver';
+  const fieldsNote = changedFieldsSummary?.trim()
+    ? `\n\nChanged fields:\n${changedFieldsSummary.trim()}`
+    : '\n\nOpen the IR to review the updated Part I fields.';
+  await createNotification({
+    userId: Number(initiatorId),
+    title: 'Part I fields updated by Request Approver',
+    message: `${by} updated Part I of inspection request ${requestNumber}.${fieldsNote}`,
+    type: 'request_updated',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
  * When an IR is submitted for Request Approver forward, notify the nominated approver (field 21),
  * or — if none is stored (legacy rows) — every Request Approver on the initiator's management chain.
  */
@@ -212,7 +256,16 @@ export async function notifyRequestApproversPendingForward(
   let userIds: number[] = [];
   if (nominatedRequestApproverId != null && nominatedRequestApproverId > 0) {
     const r = await pool.query(
-      `SELECT id FROM users WHERE id = $1 AND role = 'request_approver' AND COALESCE(status, 'active') = 'active'`,
+      `SELECT id FROM users u
+       WHERE u.id = $1
+         AND COALESCE(u.status, 'active') = 'active'
+         AND (
+           u.role = 'request_approver'
+           OR (
+             u.role = 'initiator'
+             AND UPPER(TRIM(COALESCE(u.designation, ''))) = 'DH'
+           )
+         )`,
       [nominatedRequestApproverId]
     );
     if (r.rows[0]) userIds.push(r.rows[0].id);
@@ -238,6 +291,48 @@ export async function notifyRequestApproversPendingForward(
     type: 'request_submitted',
     entityType: 'inspection_request',
     entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
+ * After Request Approver forwards, notify the fixed Part I approver (employee 1021).
+ */
+export async function notifyPart1ApproverAfterRequestApproverForward(
+  requestId: number,
+  requestNumber: string,
+  forwardedByName: string,
+  initiatorId?: number | null,
+  forwardComment?: string | null
+): Promise<void> {
+  const { normalizeEmployeeId } = await import('@/lib/employee-id');
+  const eid = normalizeEmployeeId(PART1_APPROVER_EMPLOYEE_ID);
+  const r = await pool.query(
+    `SELECT id FROM users
+     WHERE UPPER(TRIM(COALESCE(employee_id, ''))) = $1
+       AND COALESCE(status, 'active') = 'active'
+     LIMIT 1`,
+    [eid]
+  );
+  const by = forwardedByName.trim() || 'Request Approver';
+  const commentNote = forwardComment?.trim() ? ` Comment: ${forwardComment.trim()}` : '';
+
+  if (r.rows[0]) {
+    await createNotification({
+      userId: r.rows[0].id,
+      title: 'IR awaiting Part I approval',
+      message: `Inspection request ${requestNumber} was forwarded by ${by} and awaits your Part I approval.${commentNote}`,
+      type: 'request_submitted',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
+    title: 'Forwarded for Part I approval',
+    message: `Your inspection request ${requestNumber} was forwarded by ${by} and is awaiting Part I approval.`,
+    type: 'request_submitted',
     sendEmail: true,
   });
 }
@@ -415,7 +510,7 @@ export async function notifyReturnedToDesignerByQaHead(
   requestNumber: string,
   initiatorId: number,
   requestApproverId: number | null,
-  nominatedTeamHeadQaId: number,
+  nominatedTeamHeadQaId: number | null,
   returnComments: string,
   qaHeadActorName: string
 ): Promise<void> {
@@ -423,7 +518,8 @@ export async function notifyReturnedToDesignerByQaHead(
     returnComments.length > 200 ? `${returnComments.slice(0, 200)}…` : returnComments;
   const message = `Inspection request ${requestNumber} was returned to the designer/initiator by ${qaHeadActorName}. Comments: ${snippet}`;
 
-  const ids = new Set<number>([initiatorId, nominatedTeamHeadQaId]);
+  const ids = new Set<number>([initiatorId]);
+  if (nominatedTeamHeadQaId) ids.add(nominatedTeamHeadQaId);
   if (requestApproverId) ids.add(requestApproverId);
 
   const heads = await pool.query(
@@ -559,8 +655,7 @@ export async function notifyQaHeadsResubmittedAfterReturn(
 }
 
 /**
- * After the Request Approver forwards the IR (workflow `request_approve` → status `request_approved`),
- * notify QA Heads so Part II appears in their bell / dashboard.
+ * After Part I is approved (status → `request_approved`), notify QA Heads for Part II.
  */
 export async function notifyQaHeadsAfterRequestApproverForward(
   requestId: number,
@@ -730,35 +825,31 @@ export async function notifyOrdaqaHeadsPart5PendingApproval(
 }
 
 /**
- * After ORDAQA Head approves Part V — notify Part II assigned inspector(s) to start and complete inspection.
+ * After ORDAQA Head approves Part V — notify Team Head – QA that Part V is complete.
  */
-export async function notifyPart2InspectorsPart5ApprovedForInspection(
+export async function notifyTeamHeadPart5ApprovedForInspection(
   requestId: number,
   requestNumber: string,
-  inspectorUserIds: unknown[],
+  nominatedTeamHeadId: number | null | undefined,
+  skipsPart2Part3: boolean,
   ordaqaHeadName?: string
 ): Promise<void> {
-  const ids = [
-    ...new Set(
-      inspectorUserIds
-        .map((x) => parseInt(String(x), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    ),
-  ];
-  if (ids.length === 0) return;
+  const recipientIds = new Set<number>();
 
-  const result = await pool.query(
-    `SELECT id FROM users WHERE id = ANY($1::int[]) AND role = 'inspector' AND COALESCE(status, 'active') = 'active'`,
-    [ids]
-  );
-  const validIds = result.rows.map((r: { id: number }) => r.id);
-  if (validIds.length === 0) return;
+  if (skipsPart2Part3) {
+    const { listActiveRqaTeamHeadUserIds } = await import('@/lib/rqa-users');
+    for (const id of await listActiveRqaTeamHeadUserIds()) recipientIds.add(id);
+  } else if (nominatedTeamHeadId != null && Number(nominatedTeamHeadId) > 0) {
+    recipientIds.add(Number(nominatedTeamHeadId));
+  }
+
+  if (recipientIds.size === 0) return;
 
   const who = (ordaqaHeadName && String(ordaqaHeadName).trim()) || 'ORDAQA Head';
 
-  await createBulkNotifications(validIds, {
-    title: 'ORDAQA Head approved Part V — start inspection',
-    message: `Inspection request ${requestNumber}: ${who} has approved Part V and forwarded the IR. You may now Start Inspection and Complete Inspection on this IR.`,
+  await createBulkNotifications(Array.from(recipientIds), {
+    title: 'ORDAQA Head approved Part V',
+    message: `Inspection request ${requestNumber}: ${who} has approved Part V. The IR is ready for your review.`,
     type: 'part5_approved_start_inspection',
     entityType: 'inspection_request',
     entityId: requestId,

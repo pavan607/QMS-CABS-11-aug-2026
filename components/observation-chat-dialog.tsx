@@ -11,6 +11,7 @@ import {
   FileText,
   Download,
   CircleCheck,
+  Pencil,
 } from 'lucide-react';
 import {
   Dialog,
@@ -50,10 +51,12 @@ interface ObservationChatDialogProps {
   /** Optional initial hint; final permissions come from the API. */
   canReply?: boolean;
   canClose?: boolean;
+  canEdit?: boolean;
   onThreadReady?: (threadId: number) => void;
   onMessageSent?: () => void;
   onAcknowledged?: () => void;
   onClosed?: () => void;
+  onObservationEdited?: (preview: string) => void;
 }
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -91,10 +94,12 @@ export function ObservationChatDialog({
   requestNumber,
   canReply: canReplyHint = false,
   canClose: canCloseHint = false,
+  canEdit: canEditHint = false,
   onThreadReady,
   onMessageSent,
   onAcknowledged,
   onClosed,
+  onObservationEdited,
 }: ObservationChatDialogProps) {
   const { data: session } = useSession();
   const userId = parseInt((session?.user as { id?: string })?.id || '0', 10);
@@ -109,6 +114,13 @@ export function ObservationChatDialog({
   const [closed, setClosed] = useState(isClosed);
   const [canReply, setCanReply] = useState(canReplyHint);
   const [canClose, setCanClose] = useState(canCloseHint);
+  const [canEdit, setCanEdit] = useState(canEditHint);
+  const [preview, setPreview] = useState(observationPreview);
+  const [actionRequired, setActionRequired] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editObservation, setEditObservation] = useState(observationPreview);
+  const [editActionRequired, setEditActionRequired] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -135,13 +147,20 @@ export function ObservationChatDialog({
       setClosed(!!data.thread?.is_closed);
       setCanReply(!!data.can_reply);
       setCanClose(!!data.can_close);
+      setCanEdit(!!data.can_edit);
+      const nextPreview = String(data.thread?.observation_preview || observationPreview || '');
+      const nextAction = String(data.action_required || '');
+      setPreview(nextPreview);
+      setActionRequired(nextAction);
+      setEditObservation(nextPreview);
+      setEditActionRequired(nextAction);
       await acknowledge(id);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load chat');
     } finally {
       setLoading(false);
     }
-  }, [acknowledge]);
+  }, [acknowledge, observationPreview]);
 
   const ensureAndLoad = useCallback(async () => {
     setLoading(true);
@@ -265,6 +284,44 @@ export function ObservationChatDialog({
     }
   };
 
+  const handleSaveObservationEdit = async () => {
+    if (!activeThreadId || !canEdit) return;
+    const obs = editObservation.trim();
+    if (!obs) {
+      setError('Observation text is required');
+      return;
+    }
+    setSavingEdit(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/observation-chats/${activeThreadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          observation: obs,
+          action_required: editActionRequired,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update observation');
+      const nextPreview = String(data.thread?.observation_preview || obs);
+      const nextAction = String(
+        data.action_required != null ? data.action_required : editActionRequired.trim()
+      );
+      setPreview(nextPreview);
+      setActionRequired(nextAction);
+      setEditObservation(nextPreview);
+      setEditActionRequired(nextAction);
+      if (Array.isArray(data.messages)) setMessages(data.messages);
+      setEditing(false);
+      onObservationEdited?.(nextPreview);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update observation');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const partLabel = part === 'part4' ? 'Part IV — R&QA' : 'Part V — DGAQA';
   const canSend = canReply && (!!draft.trim() || !!pendingFile);
 
@@ -281,35 +338,110 @@ export function ObservationChatDialog({
                   Closed
                 </Badge>
               )}
-              {!closed && !canReply && (
+              {!closed && !canReply && !canEdit && (
                 <Badge variant="outline" className="text-[10px] font-normal">
                   View only
                 </Badge>
               )}
             </DialogTitle>
-            {canClose && !closed && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs text-emerald-700 border-emerald-200 hover:bg-emerald-50 shrink-0"
-                disabled={closing}
-                onClick={() => void handleCloseObservation()}
-              >
-                {closing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                ) : (
-                  <CircleCheck className="h-3.5 w-3.5 mr-1" />
-                )}
-                Close
-              </Button>
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {canEdit && !closed && !editing && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    setEditObservation(preview);
+                    setEditActionRequired(actionRequired);
+                    setEditing(true);
+                    setError('');
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5 mr-1" />
+                  Edit
+                </Button>
+              )}
+              {canClose && !closed && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+                  disabled={closing}
+                  onClick={() => void handleCloseObservation()}
+                >
+                  {closing ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                  ) : (
+                    <CircleCheck className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  Close
+                </Button>
+              )}
+            </div>
           </div>
           <DialogDescription className="text-xs space-y-0.5">
             {requestNumber && <span className="font-mono">{requestNumber}</span>}
             <span className="block text-muted-foreground">{partLabel}</span>
-            <span className="block line-clamp-2">{observationPreview}</span>
+            {!editing && <span className="block line-clamp-2">{preview}</span>}
+            {!editing && actionRequired ? (
+              <span className="block text-muted-foreground line-clamp-2">
+                Action required: {actionRequired}
+              </span>
+            ) : null}
           </DialogDescription>
+          {editing && (
+            <div className="mt-2 space-y-2 text-left">
+              <div>
+                <label className="text-[11px] font-medium text-muted-foreground">Observation</label>
+                <Textarea
+                  rows={3}
+                  value={editObservation}
+                  onChange={(e) => setEditObservation(e.target.value)}
+                  className="text-sm mt-1"
+                  placeholder="Observation text"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-muted-foreground">Action required</label>
+                <Textarea
+                  rows={2}
+                  value={editActionRequired}
+                  onChange={(e) => setEditActionRequired(e.target.value)}
+                  className="text-sm mt-1"
+                  placeholder="Action required (optional)"
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={savingEdit}
+                  onClick={() => {
+                    setEditing(false);
+                    setEditObservation(preview);
+                    setEditActionRequired(actionRequired);
+                    setError('');
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={savingEdit || !editObservation.trim()}
+                  onClick={() => void handleSaveObservationEdit()}
+                >
+                  {savingEdit ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                  Save
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogHeader>
 
         <div className="h-[320px] overflow-y-auto px-4 py-3 space-y-3 bg-background">
@@ -406,7 +538,9 @@ export function ObservationChatDialog({
             </p>
           ) : !canReply ? (
             <p className="text-xs text-muted-foreground text-center py-2">
-              You can view this observation discussion. Only the initiator and assigned inspectors can reply.
+              {canEdit
+                ? 'You can edit this observation sheet (Edit above). Chat replies are for the initiator and assigned inspectors.'
+                : 'You can view this observation discussion. Only the initiator and assigned inspectors can reply.'}
             </p>
           ) : (
             <div className="space-y-2">

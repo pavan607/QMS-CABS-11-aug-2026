@@ -26,9 +26,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Local env files
+# Local env files (.env is intentionally tracked for CABS offline deploy)
 .env*.local
-.env
 .env.local
 .env.development.local
 .env.test.local
@@ -58,12 +57,20 @@ Thumbs.db
 # Deploy runtime marker (authorized stop)
 deploy/qms.intentional_stop
 
+# Customer standalone package (built artifacts — no source, large binaries)
+deploy/QMS-Standalone/
+deploy/QMS-Standalone.zip
+
 # Uploads
 /public/uploads/*
 !/public/uploads/.gitkeep
 
-# Local DB backups and deploy archives
+# SQL ignored by default; keep migrations and DB Backup for CABS deploy
 *.sql
+!database/migrations/
+!database/migrations/**
+!DB Backup/
+!DB Backup/**
 deploy/qms.tar
 
 # Office lock files and temp CSS

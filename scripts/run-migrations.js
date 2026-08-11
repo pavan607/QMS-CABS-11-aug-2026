@@ -1,7 +1,9 @@
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: '.env.local' });
+// Prefer .env (project default); allow .env.local to override when present
+require('dotenv').config({ path: '.env' });
+require('dotenv').config({ path: '.env.local', override: true });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,

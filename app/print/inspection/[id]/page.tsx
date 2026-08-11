@@ -7,12 +7,13 @@ import {
   formatTestTypeDisplayWithOther,
   formatReceivedDateTimeDisplay,
   formatCalendarDateDisplay,
+  formatSourceLabel,
   parseYmdLocal,
   formatInspectionStageItemLabel,
   parsePreviousStageCleared,
   ordaqaRepReportDisplay,
   effectiveOrdqaPart5Data,
-  teamHeadFinalSignoffApproved,
+  resolvePart4TeamHeadSignoff,
   formatAssignedInspectorsDisplay,
   resolveAssignedInspectorsForDisplay,
 } from '@/lib/inspection-display';
@@ -78,6 +79,7 @@ export default function PrintInspectionReport() {
     const psc = parsePreviousStageCleared(val);
     if (!psc.answer) return '—';
     if (psc.answer === 'no') return 'No';
+    if (psc.answer === 'na') return 'NA';
     const stages = psc.stages.map((s) => formatInspectionStageItemLabel(s)).filter(Boolean);
     return stages.length ? `Yes — ${stages.join(', ')}` : 'Yes';
   };
@@ -108,18 +110,19 @@ export default function PrintInspectionReport() {
 
   const docOrder = ['ts', 'qap', 'sop_mdi', 'qtp_lqtp_softp', 'ftp_atp', 'pc_ta_other'];
   const docLabels: Record<string, string> = {
-    ts: 'TS:', qap: 'QAP:', sop_mdi: 'SOP/MDI:', qtp_lqtp_softp: 'QTP/LQTP/SOFTP:',
+    ts: 'TS:', qap: 'QAP:', sop_mdi: 'SOP/MDI/BOM/ICD:', qtp_lqtp_softp: 'QTP/LQTP/SOFTP:',
     ftp_atp: 'FTP/ATP:', pc_ta_other: 'PC/TA/ other Doc:',
   };
 
   const confirmLabels: Record<string, string> = {
-    approved_docs_available: 'a) Approved copies of the above documents are available with Industry Partner before start of QA coverage for LRU.',
+    approved_docs_available: 'a) Approved copies of documents are available at place of inspection before start of QA coverage for LRU.',
     logbook_updated: 'b) R&QA controlled Log book with template are updated.',
     previous_observations_status: 'c) Status of the previous observations/NCs.',
     cocs_available: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.',
     instruments_available: 'e) Applicable measuring instruments/Testing facilities are available with valid calibration certificates.',
     joint_inspection_request: 'f) Request for Joint Inspection with ORDAQA as per approved QAP.',
   };
+  const instrumentsAvailableNo = String(confirmations?.instruments_available || '').toLowerCase() === 'no';
 
   const PageHeader = () => (
     <div className="page-header">
@@ -222,7 +225,7 @@ export default function PrintInspectionReport() {
               <td className="value">{formatTestTypeDisplayWithOther(ir.test_type, ir.test_type_other)}</td>
             </tr>
             <tr>
-              <td className="sno" rowSpan={2}>4</td>
+              <td className="sno" rowSpan={4}>4</td>
               <td className="label">SO Details with Delivery Period</td>
               <td className="value">{fmt(ir.so_details)}</td>
             </tr>
@@ -231,9 +234,31 @@ export default function PrintInspectionReport() {
               <td className="value">{fmtDate(ir.delivery_period)}</td>
             </tr>
             <tr>
+              <td className="label sub-label">Supply Order attachment</td>
+              <td className="value">
+                {(() => {
+                  const soAtt = (ir.attachments || []).find((a: { description?: string; file_name?: string }) =>
+                    String(a.description || '').toLowerCase().includes('supply order')
+                  );
+                  return soAtt ? fmt(soAtt.file_name) : '—';
+                })()}
+              </td>
+            </tr>
+            <tr>
+              <td className="label sub-label">Involvement (DGAQA / R&QA)</td>
+              <td className="value">
+                {[
+                  ir.so_involves_dgaqa ? 'DGAQA' : null,
+                  ir.so_involves_rqa ? 'R&QA' : null,
+                ]
+                  .filter(Boolean)
+                  .join(', ') || '—'}
+              </td>
+            </tr>
+            <tr>
               <td className="sno" rowSpan={2}>5</td>
               <td className="label">Source</td>
-              <td className="value">{fmt(ir.source)}</td>
+              <td className="value">{formatSourceLabel(ir.source)}</td>
             </tr>
             <tr>
               <td className="label sub-label">OEM Name</td>
@@ -328,7 +353,14 @@ export default function PrintInspectionReport() {
             {Object.entries(confirmLabels).map(([key, lbl]) => (
               <tr key={key}>
                 <td className="sno"></td>
-                <td style={{ fontSize: 10 }}>{lbl}</td>
+                <td style={{ fontSize: 10 }}>
+                  {lbl}
+                  {key === 'instruments_available' && instrumentsAvailableNo && (
+                    <div style={{ marginTop: 4, fontWeight: 700, color: '#000' }}>
+                      Note: Inspection stage may be liable for rejection
+                    </div>
+                  )}
+                </td>
                 <td className="center" style={{ fontSize: 10 }}>
                   {confirmations?.[key] === 'yes' ? 'Yes' : confirmations?.[key] === 'no' ? 'No' : confirmations?.[key] === 'na' ? 'NA' : fmt(confirmations?.[key])}
                 </td>
@@ -582,22 +614,28 @@ export default function PrintInspectionReport() {
                 )}
               </td>
               <td className="center" style={{ verticalAlign: 'bottom', padding: '4px 6px' }}>
-                {teamHeadFinalSignoffApproved(ir) && ir.final_qa_approver_name ? (
-                  <>
-                    {ir.final_qa_approver_signature_path && (
-                      <img src={ir.final_qa_approver_signature_path} alt="" style={{ height: 32, margin: '0 auto 2px', display: 'block', objectFit: 'contain' }} />
-                    )}
-                    <div style={{ fontSize: 9 }}>
-                      {ir.final_qa_approver_name}
-                      {ir.final_qa_approver_designation ? ` (${ir.final_qa_approver_designation})` : ''}
-                    </div>
-                    <div style={{ fontSize: 8, color: '#555', marginTop: 2 }}>
-                      {fmtDateTime(ir.final_qa_approval_date)}
-                    </div>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 9, color: '#888', fontStyle: 'italic' }}>—</span>
-                )}
+                {(() => {
+                  const th = resolvePart4TeamHeadSignoff(ir);
+                  if (!th.approved) {
+                    return <span style={{ fontSize: 9, color: '#888', fontStyle: 'italic' }}>—</span>;
+                  }
+                  return (
+                    <>
+                      {th.signaturePath && (
+                        <img src={th.signaturePath} alt="" style={{ height: 32, margin: '0 auto 2px', display: 'block', objectFit: 'contain' }} />
+                      )}
+                      <div style={{ fontSize: 9 }}>
+                        {th.name}
+                        {th.designation ? ` (${th.designation})` : ''}
+                      </div>
+                      {th.approvedAt && (
+                        <div style={{ fontSize: 8, color: '#555', marginTop: 2 }}>
+                          {fmtDateTime(th.approvedAt)}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </td>
             </tr>
           </tbody>

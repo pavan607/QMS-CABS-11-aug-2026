@@ -19,6 +19,7 @@ export async function POST(request: NextRequest) {
     const userId = parseInt((session.user as { id?: string }).id || '0', 10);
     const userRole = (session.user as { role?: string }).role || 'initiator';
     const employeeId = (session.user as { employee_id?: string }).employee_id;
+    const designation = (session.user as { designation?: string }).designation;
     const body = await request.json();
 
     const inspectionRequestId = parseInt(String(body.inspection_request_id || ''), 10);
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Inspection request not found' }, { status: 404 });
     }
 
-    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId);
+    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId, designation);
     if (!allowed) {
       return NextResponse.json({ error: 'You do not have access to this observation chat' }, { status: 403 });
     }

@@ -3,12 +3,28 @@ import { auth } from '@/auth';
 import { query } from '@/lib/db';
 import { hasPermission } from '@/lib/permissions';
 import { notifyInspectionRequestSubmitted } from '@/lib/notifications';
-import { getLocalYmdToday, getPart1AdvanceNoticeValidationError, parsePart1RequestSubmissionDate, toPart1RequestDateYmd } from '@/lib/inspection-display';
+import { getLocalYmdToday, getPart1AdvanceNoticeValidationError, parsePart1RequestSubmissionDate, toPart1RequestDateYmd, validatePart1DocumentDetailsForward } from '@/lib/inspection-display';
 import {
   sqlInspectionScopeCondition,
   sqlInspectionScopeNeedsUserId,
+  sqlGroupInspectionVisibleCondition,
+  isGroupOversightDesignation,
   userHasGlobalInspectionAccess,
+  employeeIsPart1Approver,
+  sqlPart1ApproverVisibleCondition,
 } from '@/lib/inspection-access';
+import { ensurePart1SoInvolvementColumns, parsePart1Bool } from '@/lib/part1-so-fields-server';
+import { PART1_APPROVER_EMPLOYEE_ID } from '@/lib/part1-approver';
+import { normalizeEmployeeId } from '@/lib/employee-id';
+
+async function ensurePart1ApprovedByColumn(): Promise<void> {
+  await query(
+    `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS part1_approved_by INTEGER`
+  );
+  await query(
+    `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS part1_approved_at TIMESTAMPTZ`
+  );
+}
 
 // GET all inspection requests
 export async function GET(request: NextRequest) {
@@ -28,10 +44,13 @@ export async function GET(request: NextRequest) {
     const fromDate = searchParams.get('from_date');
     const toDate = searchParams.get('to_date');
 
+    await ensurePart1ApprovedByColumn();
+
     const srusCheck = await query(
       `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'srus') as exists`
     );
     const hasSrus = srusCheck.rows[0]?.exists;
+    const part1EmployeeId = normalizeEmployeeId(PART1_APPROVER_EMPLOYEE_ID).replace(/'/g, "''");
 
     let sql = `
       SELECT 
@@ -47,6 +66,33 @@ export async function GET(request: NextRequest) {
         ) as inspector_names,
         approver.name as approver_name,
         approved_by_user.name as approved_by_name,
+        req_approver.name as request_approver_name,
+        nominated_ra.name as nominated_request_approver_name,
+        COALESCE(
+          part1_approved_by_user.name,
+          CASE
+            WHEN ir.status IN (
+              'pending', 'draft', 'pending_request_approval',
+              'returned_to_designer', 'pending_part1_approval', 'rejected'
+            ) THEN NULL
+            ELSE (
+              SELECT u_act.name
+              FROM inspection_activities a
+              JOIN users u_act ON u_act.id = a.user_id
+              WHERE a.inspection_request_id = ir.id
+                AND a.activity_type = 'part1_approved'
+              ORDER BY a.created_at DESC
+              LIMIT 1
+            )
+          END
+        ) as part1_approved_by_name,
+        (
+          SELECT u_p1.name
+          FROM users u_p1
+          WHERE UPPER(TRIM(COALESCE(u_p1.employee_id, ''))) = '${part1EmployeeId}'
+          ORDER BY CASE WHEN COALESCE(u_p1.status, 'active') = 'active' THEN 0 ELSE 1 END, u_p1.id
+          LIMIT 1
+        ) as part1_approver_name,
         p.name as project_name,
         p.code as project_code,
         ss.name as subsystem_name,
@@ -60,6 +106,9 @@ export async function GET(request: NextRequest) {
       LEFT JOIN users inspector ON ir.inspector_id = inspector.id
       LEFT JOIN users approver ON ir.approver_id = approver.id
       LEFT JOIN users approved_by_user ON ir.approved_by = approved_by_user.id
+      LEFT JOIN users req_approver ON ir.request_approver_id = req_approver.id
+      LEFT JOIN users nominated_ra ON ir.nominated_request_approver_id = nominated_ra.id
+      LEFT JOIN users part1_approved_by_user ON ir.part1_approved_by = part1_approved_by_user.id
       LEFT JOIN projects p ON ir.project_id = p.id
       LEFT JOIN subsystems ss ON ir.subsystem_id = ss.id
       LEFT JOIN lrus l ON ir.lru_id = l.id
@@ -72,7 +121,10 @@ export async function GET(request: NextRequest) {
     const userRole = (session.user as any).role;
     const userId = Number.parseInt(String((session.user as any)?.id ?? ''), 10);
     const employeeId = (session.user as any).employee_id as string | undefined;
+    const designation = (session.user as any).designation as string | undefined;
     const hasGlobalInspectionScope = userHasGlobalInspectionAccess(userRole, employeeId);
+    const isGroupLead = isGroupOversightDesignation(designation);
+    const isPart1Approver = employeeIsPart1Approver(employeeId);
 
     const needsStrictUserId =
       !hasGlobalInspectionScope &&
@@ -80,57 +132,61 @@ export async function GET(request: NextRequest) {
         userRole === 'ordaqa_inspector' ||
         userRole === 'qa_approver' ||
         userRole === 'initiator' ||
-        userRole === 'request_approver');
+        userRole === 'request_approver' ||
+        isGroupLead ||
+        isPart1Approver);
 
     if (needsStrictUserId && (!Number.isFinite(userId) || userId < 1)) {
       return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
     }
 
     if (!hasGlobalInspectionScope) {
-      if (userRole === 'initiator') {
-        sql += ` AND ir.initiator_id = $${paramIndex}`;
+      if (isPart1Approver) {
+        // Employee 1021: Part I queue + own/nominated IRs; hide unforwarded group IRs
+        const ph = `$${paramIndex}`;
+        sql += ` AND ${sqlPart1ApproverVisibleCondition('ir', ph)}`;
         params.push(userId);
         paramIndex++;
-      }
-
-      const scopeRoles = ['inspector', 'ordaqa_inspector', 'qa_approver', 'ordaqa_head'] as const;
-      if (scopeRoles.includes(userRole as (typeof scopeRoles)[number])) {
+      } else if (userRole === 'request_approver' || isGroupLead) {
         const ph = `$${paramIndex}`;
-        const scopeCond = sqlInspectionScopeCondition(userRole, 'ir', ph);
-        if (scopeCond) {
-          sql += ` AND ${scopeCond}`;
-          if (sqlInspectionScopeNeedsUserId(userRole)) {
-            params.push(userId);
-            paramIndex++;
+        let cond = sqlGroupInspectionVisibleCondition('ir', ph);
+        // Keep any existing role-based visibility (e.g. GD who is also qa_approver).
+        if (userRole !== 'request_approver') {
+          if (userRole === 'initiator') {
+            cond = `(ir.initiator_id = ${ph} OR ${cond})`;
+          } else {
+            const roleCond = sqlInspectionScopeCondition(userRole, 'ir', ph);
+            if (roleCond) cond = `(${cond} OR ${roleCond})`;
           }
         }
-      }
-
-      if (userRole === 'request_approver') {
-        sql += ` AND (
-          ir.nominated_request_approver_id = $${paramIndex}
-          OR (
-            ir.nominated_request_approver_id IS NULL
-            AND ir.initiator_id IN (
-              WITH RECURSIVE team AS (
-                SELECT id FROM users WHERE reporting_to = $${paramIndex}
-                UNION ALL
-                SELECT u.id FROM users u INNER JOIN team t ON u.reporting_to = t.id
-              )
-              SELECT id FROM team
-            )
-          )
-        )`;
+        sql += ` AND ${cond}`;
         params.push(userId);
         paramIndex++;
-      }
+      } else if (userRole === 'initiator') {
+        sql += ` AND (ir.initiator_id = $${paramIndex} OR ir.nominated_request_approver_id = $${paramIndex})`;
+        params.push(userId);
+        paramIndex++;
+      } else {
+        const scopeRoles = ['inspector', 'ordaqa_inspector', 'qa_approver', 'ordaqa_head'] as const;
+        if (scopeRoles.includes(userRole as (typeof scopeRoles)[number])) {
+          const ph = `$${paramIndex}`;
+          const scopeCond = sqlInspectionScopeCondition(userRole, 'ir', ph);
+          if (scopeCond) {
+            sql += ` AND ${scopeCond}`;
+            if (sqlInspectionScopeNeedsUserId(userRole)) {
+              params.push(userId);
+              paramIndex++;
+            }
+          }
+        }
 
-      if (userRole === 'qa_head') {
-        const qaHeadScope = sqlInspectionScopeCondition('qa_head', 'ir', '$1');
-        if (qaHeadScope) sql += ` AND ${qaHeadScope}`;
+        if (userRole === 'qa_head') {
+          const qaHeadScope = sqlInspectionScopeCondition('qa_head', 'ir', '$1');
+          if (qaHeadScope) sql += ` AND ${qaHeadScope}`;
+        }
       }
     }
-    // administrator, os_director, global employee override — no row filter
+    // administrator, os_director — no row filter
 
     if (status) {
       sql += ` AND ir.status = $${paramIndex}`;
@@ -220,6 +276,8 @@ export async function POST(request: NextRequest) {
       designer_rep_name, designer_rep_designation, designer_rep_contact, design_coordinator_name,
       certified_by_name, certified_by_designation,
       nominated_request_approver_id: bodyNominatedRa,
+      so_involves_dgaqa: bodySoInvolvesDgaqa,
+      so_involves_rqa: bodySoInvolvesRqa,
     } = body;
 
     let nominatedRequestApproverId: number | null = null;
@@ -229,12 +287,24 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid nominated Request Approver' }, { status: 400 });
       }
       const appr = await query(
-        `SELECT id FROM users WHERE id = $1 AND role = 'request_approver' AND COALESCE(status, 'active') = 'active'`,
+        `SELECT id FROM users u
+         WHERE u.id = $1
+           AND COALESCE(u.status, 'active') = 'active'
+           AND (
+             u.role = 'request_approver'
+             OR (
+               u.role = 'initiator'
+               AND UPPER(TRIM(COALESCE(u.designation, ''))) = 'DH'
+             )
+           )`,
         [nid]
       );
       if (appr.rows.length === 0) {
         return NextResponse.json(
-          { error: 'Nominated Request Approver must be an active user with the Request Approver role' },
+          {
+            error:
+              'Nominated Request Approver must be an active Request Approver, or Initiator/Designer with designation DH',
+          },
           { status: 400 }
         );
       }
@@ -273,6 +343,11 @@ export async function POST(request: NextRequest) {
       if (advanceNoticeError) {
         return NextResponse.json({ error: advanceNoticeError }, { status: 400 });
       }
+
+      const documentDetailsError = validatePart1DocumentDetailsForward(document_details);
+      if (documentDetailsError) {
+        return NextResponse.json({ error: documentDetailsError }, { status: 400 });
+      }
     }
 
     if (saveAsDraft) {
@@ -308,7 +383,11 @@ export async function POST(request: NextRequest) {
     const autoLocation = venue || '';
     const autoItem = lru_nomenclature || '';
     const autoInspectionType = inspection_type || inspection_stage || '';
-    const insertStatus = saveAsDraft ? 'draft' : 'pending';
+    const insertStatus = saveAsDraft ? 'draft' : 'pending_request_approval';
+
+    await ensurePart1SoInvolvementColumns();
+    const soInvolvesDgaqa = parsePart1Bool(bodySoInvolvesDgaqa);
+    const soInvolvesRqa = parsePart1Bool(bodySoInvolvesRqa);
 
     const insertColumns = `request_number, title, description, location, item, inspection_type, due_date,
         scheduled_date, request_date, initiator_id, status,
@@ -362,6 +441,12 @@ export async function POST(request: NextRequest) {
     );
 
     const newRequest = result.rows[0];
+    await query(
+      `UPDATE inspection_requests SET so_involves_dgaqa = $1, so_involves_rqa = $2 WHERE id = $3`,
+      [soInvolvesDgaqa, soInvolvesRqa, newRequest.id]
+    );
+    newRequest.so_involves_dgaqa = soInvolvesDgaqa;
+    newRequest.so_involves_rqa = soInvolvesRqa;
 
     if (!saveAsDraft) {
       await query(
@@ -379,7 +464,7 @@ export async function POST(request: NextRequest) {
 
       await query(
         `INSERT INTO inspection_activities (inspection_request_id, activity_type, description, user_id) VALUES ($1, $2, $3, $4)`,
-        [newRequest.id, 'created', `Inspection Request ${newRequest.request_number} created`, userId]
+        [newRequest.id, 'created', `Inspection Request ${newRequest.request_number} created — pending Request Approver forward`, userId]
       );
     } else {
       await query(

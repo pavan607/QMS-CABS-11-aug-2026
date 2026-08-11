@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { ArrowLeft, AlertCircle, Save, FileText, ChevronDown, ChevronRight, X, Search, Paperclip, Loader2, CalendarDays, RotateCcw } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Save, FileText, ChevronDown, ChevronRight, X, Search, Paperclip, Loader2, CalendarDays, RotateCcw, Eye, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   parseYmdLocal,
@@ -23,7 +23,10 @@ import {
   toDateOnlyYmd,
   formatInspectionStageItemLabel,
   parsePreviousStageCleared,
+  validatePart1DocumentDetailsForward,
   PART1_VENUE_OPTIONS,
+  SOURCE_OPTIONS,
+  normalizeSourceValue,
   formatPart1Venue,
   parsePart1Venue,
   validatePart1InspectionAdvanceNotice,
@@ -36,6 +39,11 @@ import {
   loadPart1FormDraftLocal,
   clearPart1FormDraftLocal,
 } from '@/lib/inspection-part1-draft-local';
+import {
+  isSupplyOrderAttachment,
+  parsePart1Bool,
+  SUPPLY_ORDER_ATTACHMENT_DESCRIPTION,
+} from '@/lib/part1-so-fields';
 import { CalendarDateInput } from '@/components/calendar-date-input';
 import { DateTimeLocalInput, parseDateTimeLocalParts } from '@/components/datetime-local-input';
 import {
@@ -50,6 +58,12 @@ import {
 interface Project { id: number; name: string; code: string; }
 interface Subsystem { id: number; project_id: number; name: string; code: string; }
 interface LRU { id: number; subsystem_id: number; name: string; code: string; part_number: string; serial_numbers?: string; }
+interface ProjectReferredDoc {
+  id: number;
+  file_name: string;
+  file_path: string;
+  file_size?: number | null;
+}
 interface SRU { id: number; lru_id: number; name: string; code: string; part_number: string; serial_numbers?: string; }
 interface InspectionTypeGroup { id: number; name: string; items: { id: number; name: string; code: string }[]; }
 interface Approver {
@@ -57,6 +71,7 @@ interface Approver {
   name: string;
   designation: string;
   employee_id: string;
+  role?: string;
 }
 
 /** Field 21 — certifier rank options (Part I) */
@@ -76,7 +91,7 @@ function certifierGradeSelectOptions(stored: string | undefined | null): string[
 const DOC_TYPES = [
   { key: 'ts', label: 'TS' },
   { key: 'qap', label: 'QAP' },
-  { key: 'sop_mdi', label: 'SOP/MDI' },
+  { key: 'sop_mdi', label: 'SOP/MDI/BOM/ICD' },
   { key: 'qtp_lqtp_softp', label: 'QTP/LQTP/SOFTP' },
   { key: 'ftp_atp', label: 'FTP/ATP' },
   { key: 'pc_ta_other', label: 'PC/TA/Other Doc' },
@@ -341,7 +356,9 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
     test_type_other: tOther,
     so_details: String(ir.so_details || ''),
     delivery_period: ir.delivery_period != null ? toDateOnlyYmd(ir.delivery_period) : '',
-    source: String(ir.source || ''),
+    so_involves_dgaqa: parsePart1Bool(ir.so_involves_dgaqa),
+    so_involves_rqa: parsePart1Bool(ir.so_involves_rqa),
+    source: normalizeSourceValue(ir.source),
     oem_name: String(ir.oem_name || ''),
     criticality: parseDbStringArray(ir.criticality),
     quantity:
@@ -487,7 +504,13 @@ function CertifierSearchSelect({
                 >
                   <span className="font-medium">{a.name}</span>
                   <span className="text-xs text-muted-foreground">
-                    {[a.employee_id, a.designation].filter(Boolean).join(' · ')}
+                    {[
+                      a.employee_id,
+                      a.designation,
+                      a.role === 'initiator' ? 'Initiator/Designer' : a.role === 'request_approver' ? 'Request Approver' : a.role,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </span>
                 </button>
               ))
@@ -549,7 +572,7 @@ function SearchableCodeNameSelect<T extends { id: number; name: string; code: st
   const isOpen = open && !disabled;
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative min-w-0 w-full">
       <button
         type="button"
         disabled={disabled}
@@ -561,7 +584,7 @@ function SearchableCodeNameSelect<T extends { id: number; name: string; code: st
           if (!open) setSearch('');
         }}
         className={cn(
-          'flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background',
+          'flex h-10 w-full min-w-0 items-center justify-between overflow-hidden rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
           disabled && 'cursor-not-allowed opacity-60',
           errorClassName
@@ -580,7 +603,7 @@ function SearchableCodeNameSelect<T extends { id: number; name: string; code: st
       </button>
       {isOpen && (
         <div
-          className="absolute z-50 mt-1 w-full min-w-[260px] rounded-md border bg-popover text-popover-foreground shadow-md"
+          className="absolute z-50 mt-1 w-full min-w-0 max-w-full rounded-md border bg-popover text-popover-foreground shadow-md"
           role="listbox"
         >
           <div className="flex items-center gap-2 border-b px-2 py-1.5">
@@ -777,6 +800,8 @@ function createEmptyPart1Form() {
     test_type_other: '',
     so_details: '',
     delivery_period: '',
+    so_involves_dgaqa: false,
+    so_involves_rqa: false,
     source: '',
     oem_name: '',
     lru_nomenclature: '',
@@ -846,17 +871,24 @@ function NewInspectionRequestForm() {
   const [loadedIrStatus, setLoadedIrStatus] = useState<string | null>(null);
   const [loadedRequestNumber, setLoadedRequestNumber] = useState<string | null>(null);
   const [hasExistingLogbook, setHasExistingLogbook] = useState(false);
+  const [hasExistingSupplyOrder, setHasExistingSupplyOrder] = useState(false);
+  const [existingSupplyOrderName, setExistingSupplyOrderName] = useState('');
 
   const [logbookFile, setLogbookFile] = useState<File | null>(null);
+  const [supplyOrderFile, setSupplyOrderFile] = useState<File | null>(null);
   const [userSignature, setUserSignature] = useState<string | null>(null);
   const [draftNoticeOpen, setDraftNoticeOpen] = useState(false);
   const [draftNoticeDocLabel, setDraftNoticeDocLabel] = useState('TS');
+  const [instrumentsNoWarningOpen, setInstrumentsNoWarningOpen] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [subsystems, setSubsystems] = useState<Subsystem[]>([]);
   const [lrus, setLrus] = useState<LRU[]>([]);
   const [srus, setSrus] = useState<SRU[]>([]);
   const [availableSerials, setAvailableSerials] = useState<string[]>([]);
+  const [projectReferredDocs, setProjectReferredDocs] = useState<ProjectReferredDoc[]>([]);
+  const [loadingProjectReferredDocs, setLoadingProjectReferredDocs] = useState(false);
+  const projectReferredDocsFetchGenRef = useRef(0);
   const [inspectionTypeGroups, setInspectionTypeGroups] = useState<InspectionTypeGroup[]>([]);
   const [inspectionTypesError, setInspectionTypesError] = useState('');
   const [inspectionTypesLoading, setInspectionTypesLoading] = useState(false);
@@ -949,19 +981,43 @@ function NewInspectionRequestForm() {
         }
         const ir = data.request;
         if (!ir || cancelled) return;
-        if (
-          !['draft', 'pending', 'returned_to_designer', 'pending_request_approval'].includes(ir.status)
-        ) {
-          setSubmitError('This inspection cannot be edited in its current status.');
-          return;
-        }
         const uid = parseInt((session.user as { id?: string }).id || '0', 10);
         const role = (session.user as { role?: string }).role;
-        if (ir.initiator_id !== uid && role !== 'administrator') {
-          setSubmitError('You can only edit your own inspection requests.');
+        const sessionDes = (session.user as { designation?: string }).designation;
+        const isNominatedCertifier =
+          ir.nominated_request_approver_id != null &&
+          Number(ir.nominated_request_approver_id) === uid &&
+          (role === 'request_approver' ||
+            (role === 'initiator' &&
+              String(sessionDes || '')
+                .trim()
+                .toUpperCase() === 'DH'));
+        const initiatorMayEdit = ['draft', 'pending', 'returned_to_designer'].includes(ir.status);
+        const certifierMayEdit =
+          isNominatedCertifier &&
+          ['pending', 'pending_request_approval'].includes(ir.status);
+        const adminMayEdit =
+          role === 'administrator' &&
+          ['draft', 'pending', 'returned_to_designer'].includes(ir.status);
+        if (!(initiatorMayEdit && ir.initiator_id === uid) && !certifierMayEdit && !adminMayEdit) {
+          if (
+            !['draft', 'pending', 'returned_to_designer', 'pending_request_approval'].includes(ir.status)
+          ) {
+            setSubmitError('This inspection cannot be edited in its current status.');
+          } else if (ir.status === 'pending_request_approval' && ir.initiator_id === uid && !isNominatedCertifier) {
+            setSubmitError('Part I cannot be edited after it has been submitted to the Request Approver.');
+          } else {
+            setSubmitError('You can only edit your own inspection requests, or Part I as the nominated Request Approver.');
+          }
+          return;
+        }
+        if (ir.initiator_id !== uid && role !== 'administrator' && !isNominatedCertifier) {
+          setSubmitError('You can only edit your own inspection requests, or Part I as the nominated Request Approver.');
           return;
         }
         await fetchSubsystems(String(ir.project_id));
+        if (cancelled) return;
+        await fetchProjectReferredDocs(String(ir.project_id));
         if (cancelled) return;
         await fetchLrus(String(ir.subsystem_id));
         if (cancelled) return;
@@ -985,8 +1041,14 @@ function NewInspectionRequestForm() {
           /* use IR snapshot only */
         }
         if (cancelled) return;
+        const isOwnIr = Number(ir.initiator_id) === uid;
+        // Always keep the IR's Designer Rep designation snapshot. Never replace it with the
+        // editor's profile (Request Approver / DH would otherwise overwrite Sc E → their rank).
         const designerRepDesignation =
-          (profileRank || profileDes) || (String(ir.designer_rep_designation || '').trim() || '');
+          String(ir.designer_rep_designation || '').trim() ||
+          String(ir.initiator_scientist_rank || '').trim() ||
+          (isOwnIr ? profileRank || profileDes : '') ||
+          '';
 
         const attRes = await fetch(
           `/api/attachments?entity_type=inspection_request&entity_id=${encodeURIComponent(String(ir.id))}`
@@ -1000,6 +1062,11 @@ function NewInspectionRequestForm() {
                 String(a.description || '').toLowerCase().includes('log')
             )
           );
+          const soAtt = list.find((a: { description?: string; file_name?: string }) =>
+            isSupplyOrderAttachment(a.description)
+          );
+          setHasExistingSupplyOrder(!!soAtt);
+          setExistingSupplyOrderName(soAtt?.file_name ? String(soAtt.file_name) : '');
         }
 
         const dd = parseJsonObj(ir.document_details);
@@ -1074,8 +1141,10 @@ function NewInspectionRequestForm() {
           test_type,
           test_type_other: tOther,
           so_details: ir.so_details || '',
-          delivery_period: String(ir.delivery_period || ''),
-          source: ir.source || '',
+          delivery_period: ir.delivery_period != null ? toDateOnlyYmd(ir.delivery_period) : '',
+          so_involves_dgaqa: parsePart1Bool(ir.so_involves_dgaqa),
+          so_involves_rqa: parsePart1Bool(ir.so_involves_rqa),
+          source: normalizeSourceValue(ir.source),
           oem_name: ir.oem_name || '',
           lru_nomenclature: ir.lru_nomenclature || '',
           criticality: parseDbStringArray(ir.criticality),
@@ -1161,7 +1230,9 @@ function NewInspectionRequestForm() {
       previous_stage_cleared:
         formState.previous_stage_cleared_answer === 'no'
           ? 'no'
-          : formState.previous_stage_cleared.join(', '),
+          : formState.previous_stage_cleared_answer === 'na'
+            ? 'na'
+            : formState.previous_stage_cleared.join(', '),
       inspection_stage: formState.inspection_stage.join(', '),
       inspection_datetime: formState.inspection_date_from || null,
       inspection_date_from: formState.inspection_date_from || null,
@@ -1263,6 +1334,30 @@ function NewInspectionRequestForm() {
     } catch (e) { console.error(e); }
   };
 
+  const fetchProjectReferredDocs = async (projectId: string) => {
+    const gen = ++projectReferredDocsFetchGenRef.current;
+    if (!projectId) {
+      setProjectReferredDocs([]);
+      setLoadingProjectReferredDocs(false);
+      return;
+    }
+    setLoadingProjectReferredDocs(true);
+    try {
+      const res = await fetch(`/api/attachments?entity_type=project&entity_id=${encodeURIComponent(projectId)}`);
+      const data = await res.json();
+      if (gen !== projectReferredDocsFetchGenRef.current) return;
+      setProjectReferredDocs(data.attachments || []);
+    } catch (e) {
+      console.error(e);
+      if (gen !== projectReferredDocsFetchGenRef.current) return;
+      setProjectReferredDocs([]);
+    } finally {
+      if (gen === projectReferredDocsFetchGenRef.current) {
+        setLoadingProjectReferredDocs(false);
+      }
+    }
+  };
+
   const fetchSubsystems = async (projectId: string) => {
     const gen = ++subsystemFetchGenRef.current;
     try {
@@ -1298,6 +1393,7 @@ function NewInspectionRequestForm() {
     setLrus([]);
     setSrus([]);
     setAvailableSerials([]);
+    setProjectReferredDocs([]);
     setForm((prev) => ({
       ...prev,
       project_id: projectId,
@@ -1308,7 +1404,12 @@ function NewInspectionRequestForm() {
       part_number: '',
       serial_number: [],
     }));
-    if (projectId) void fetchSubsystems(projectId);
+    if (projectId) {
+      void fetchSubsystems(projectId);
+      void fetchProjectReferredDocs(projectId);
+    } else {
+      void fetchProjectReferredDocs('');
+    }
   };
 
   const handleSubsystemChange = (subsystemId: string) => {
@@ -1375,6 +1476,9 @@ function NewInspectionRequestForm() {
         const data = await res.json();
         loadedSubsystems = data.subsystems || [];
         setSubsystems(loadedSubsystems);
+        await fetchProjectReferredDocs(String(draft.project_id));
+      } else {
+        setProjectReferredDocs([]);
       }
       if (
         draft.subsystem_id &&
@@ -1443,9 +1547,20 @@ function NewInspectionRequestForm() {
 
   const fetchRequestApprovers = async () => {
     try {
-      const res = await fetch('/api/users?role=request_approver&status=active');
-      const data = await res.json();
-      setRequestApprovers(data.users || []);
+      // Field 21: Request Approvers, plus Initiator/Designer with designation DH
+      const [raRes, dhRes] = await Promise.all([
+        fetch('/api/users?role=request_approver&status=active'),
+        fetch('/api/users?role=initiator&designation=DH&status=active'),
+      ]);
+      const raData = await raRes.json();
+      const dhData = await dhRes.json();
+      const byId = new Map<number, any>();
+      for (const u of [...(raData.users || []), ...(dhData.users || [])]) {
+        if (u?.id != null) byId.set(Number(u.id), u);
+      }
+      setRequestApprovers(Array.from(byId.values()).sort((a, b) =>
+        String(a.name || '').localeCompare(String(b.name || ''))
+      ));
     } catch (e) { console.error(e); }
   };
 
@@ -1560,6 +1675,7 @@ function NewInspectionRequestForm() {
       ...prev,
       nominated_request_approver_id: approverId,
       certified_by_name: approver?.name || '',
+      certified_by_designation: approver?.designation || prev.certified_by_designation || '',
     }));
   };
 
@@ -1605,6 +1721,9 @@ function NewInspectionRequestForm() {
       ...prev,
       confirmations: { ...prev.confirmations, [key]: value },
     }));
+    if (key === 'instruments_available' && value === 'no') {
+      setInstrumentsNoWarningOpen(true);
+    }
   };
 
   const getRequestSubmissionDate = useCallback(
@@ -1662,6 +1781,9 @@ function NewInspectionRequestForm() {
     if (!form.delivery_period) errors.delivery_period = 'Delivery Period is required';
     else if (form.request_date && form.delivery_period < form.request_date.slice(0, 10))
       errors.delivery_period = 'Delivery period must be on or after the request date';
+    if (!supplyOrderFile && !hasExistingSupplyOrder) {
+      errors.so_attachment = '4. Supply Order attachment is required';
+    }
     if (!form.source) errors.source = '5. Source is required';
     if (!form.oem_name.trim()) errors.oem_name = 'OEM Name is required';
     if (!form.lru_id) errors.lru_id = '6. LRU Nomenclature is required';
@@ -1752,6 +1874,15 @@ function NewInspectionRequestForm() {
           break;
         }
         if (d.approved === 'na') continue;
+        if (d.approved === 'no') {
+          if (key === 'pc_ta_other' && !d?.doc_no?.trim()) {
+            errors.document_details =
+              '18. PC/TA/Other Doc — Controlled document number is required when No is selected';
+            errors[DOC_ROW_HIGHLIGHT_KEY] = key;
+            break;
+          }
+          continue;
+        }
         if (!d?.doc_no?.trim()) {
           errors.document_details = `18. ${label} — Controlled document number is required`;
           errors[DOC_ROW_HIGHLIGHT_KEY] = key;
@@ -1771,6 +1902,15 @@ function NewInspectionRequestForm() {
           errors.document_details = `18. ${label} — Date is required`;
           errors[DOC_ROW_HIGHLIGHT_KEY] = key;
           break;
+        }
+      }
+    }
+    if (!errors.document_details) {
+      const forwardErr = validatePart1DocumentDetailsForward(form.document_details);
+      if (forwardErr) {
+        errors.document_details = forwardErr;
+        if (forwardErr.includes('PC/TA/Other Doc')) {
+          errors[DOC_ROW_HIGHLIGHT_KEY] = 'pc_ta_other';
         }
       }
     }
@@ -1837,6 +1977,19 @@ function NewInspectionRequestForm() {
             await fetch('/api/attachments', { method: 'POST', body: fd });
           } catch (uploadErr) {
             console.error('Logbook upload failed:', uploadErr);
+          }
+        }
+
+        if (supplyOrderFile && targetId) {
+          try {
+            const fd = new FormData();
+            fd.append('file', supplyOrderFile);
+            fd.append('entity_type', 'inspection_request');
+            fd.append('entity_id', String(targetId));
+            fd.append('description', SUPPLY_ORDER_ATTACHMENT_DESCRIPTION);
+            await fetch('/api/attachments', { method: 'POST', body: fd });
+          } catch (uploadErr) {
+            console.error('Supply Order upload failed:', uploadErr);
           }
         }
 
@@ -2030,8 +2183,8 @@ function NewInspectionRequestForm() {
             <CardDescription>1-3: Project, Subsystem, and Item classification</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="grid gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div className="grid gap-2 min-w-0">
                 <Label>1. Programme/Project *</Label>
                 <SearchableCodeNameSelect
                   items={projects}
@@ -2043,7 +2196,7 @@ function NewInspectionRequestForm() {
                 />
                 {errMsg('project_id')}
               </div>
-              <div className="grid gap-2">
+              <div className="grid gap-2 min-w-0">
                 <Label>2. Subsystem *</Label>
                 <SearchableCodeNameSelect
                   items={subsystems}
@@ -2058,6 +2211,49 @@ function NewInspectionRequestForm() {
                 {errMsg('subsystem_id')}
               </div>
             </div>
+
+            {form.project_id && (
+              <div className="rounded-md border bg-muted/20 px-3 py-2 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Paperclip className="h-3.5 w-3.5 shrink-0" />
+                  Referred documents
+                </div>
+                {loadingProjectReferredDocs ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground pl-5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading...
+                  </div>
+                ) : projectReferredDocs.length === 0 ? (
+                  <p className="text-xs text-muted-foreground pl-5">No referred documents for this project.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {projectReferredDocs.map((doc) => (
+                      <li key={doc.id} className="flex items-center gap-2 min-w-0">
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-[#1e3a5f] dark:text-sky-400" />
+                        <span className="truncate text-xs text-foreground flex-1 min-w-0">{doc.file_name}</span>
+                        <a
+                          href={doc.file_path}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 shrink-0 text-xs font-medium text-[#1e3a5f] hover:underline dark:text-sky-400"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          View
+                        </a>
+                        <a
+                          href={doc.file_path}
+                          download={doc.file_name}
+                          className="inline-flex items-center gap-1 shrink-0 text-xs font-medium text-[#1e3a5f] hover:underline dark:text-sky-400"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Download
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             <div className="grid gap-2">
               <Label>3. Item Pertains to *</Label>
@@ -2117,7 +2313,7 @@ function NewInspectionRequestForm() {
             <CardDescription>4-11: Supply order, source, LRU identification, and quantity</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
               <div className="grid gap-2">
                 <Label>4. SO Details *</Label>
                 <Input className={errClass('so_details')} value={form.so_details} onChange={(e) => setForm({ ...form, so_details: e.target.value })} placeholder="Supply Order number" />
@@ -2135,14 +2331,120 @@ function NewInspectionRequestForm() {
               </div>
             </div>
 
+            <div className="grid gap-2">
+              <Label className="text-sm font-normal text-muted-foreground">Supply Order attachment *</Label>
+              {supplyOrderFile ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm max-w-xl">
+                  <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="flex-1 truncate">{supplyOrderFile.name}</span>
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {(supplyOrderFile.size / 1024).toFixed(0)} KB
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => setSupplyOrderFile(null)}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ) : hasExistingSupplyOrder ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm max-w-xl">
+                  <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="flex-1 truncate">{existingSupplyOrderName || 'Supply Order on file'}</span>
+                  <label className="text-xs text-primary cursor-pointer hover:underline shrink-0">
+                    Replace
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) {
+                          if (f.size > 10 * 1024 * 1024) {
+                            alert('File size exceeds 10MB limit');
+                            return;
+                          }
+                          setSupplyOrderFile(f);
+                          setFieldErrors(prev => ({ ...prev, so_attachment: '' }));
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <label
+                  className={`flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors max-w-xl ${
+                    fieldErrors.so_attachment ? 'border-red-500 ring-1 ring-red-500' : ''
+                  }`}
+                >
+                  <Paperclip className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">Upload Supply Order (max 10MB) *</span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) {
+                        if (f.size > 10 * 1024 * 1024) {
+                          alert('File size exceeds 10MB limit');
+                          return;
+                        }
+                        setSupplyOrderFile(f);
+                        setFieldErrors(prev => ({ ...prev, so_attachment: '' }));
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              )}
+              {errMsg('so_attachment')}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-sm font-normal text-muted-foreground">
+                Involvement in this inspection
+              </Label>
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.so_involves_dgaqa}
+                    onChange={(e) => setForm({ ...form, so_involves_dgaqa: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <span className="text-sm">DGAQA</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.so_involves_rqa}
+                    onChange={(e) => setForm({ ...form, so_involves_rqa: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <span className="text-sm">R&QA</span>
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Note: Checked = Yes, unchecked = No (for DGAQA and for R&amp;QA).
+              </p>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label>5. Source *</Label>
                 <Select value={form.source} onValueChange={(v) => setForm({ ...form, source: v })}>
                   <SelectTrigger className={errClass('source')}><SelectValue placeholder="Select source..." /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="indigenous">Indigenous</SelectItem>
-                    <SelectItem value="imported">Imported</SelectItem>
+                    {SOURCE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 {errMsg('source')}
@@ -2400,6 +2702,7 @@ function NewInspectionRequestForm() {
                   <SelectContent>
                     <SelectItem value="yes">Yes</SelectItem>
                     <SelectItem value="no">No</SelectItem>
+                    <SelectItem value="na">NA</SelectItem>
                   </SelectContent>
                 </Select>
                 {form.previous_stage_cleared_answer === 'yes' && (
@@ -2428,6 +2731,7 @@ function NewInspectionRequestForm() {
                   <SelectContent>
                     <SelectItem value="yes">Yes</SelectItem>
                     <SelectItem value="no">No</SelectItem>
+                    <SelectItem value="na">NA</SelectItem>
                   </SelectContent>
                 </Select>
                 {form.logbook_attached === 'yes' && (
@@ -2703,7 +3007,7 @@ function NewInspectionRequestForm() {
             {errMsg('confirmations')}
             <div className="space-y-4">
               {[
-                { key: 'approved_docs_available', label: 'a) Approved copies of documents are available with Industry Partner before start of QA coverage for LRU.' },
+                { key: 'approved_docs_available', label: 'a) Approved copies of documents are available at place of inspection before start of QA coverage for LRU.' },
                 { key: 'logbook_updated', label: 'b) R&QA controlled Log book with template are updated.' },
                 { key: 'previous_observations_status', label: 'c) Status of the previous observations/NCs.' },
                 { key: 'cocs_available', label: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.' },
@@ -2822,9 +3126,11 @@ function NewInspectionRequestForm() {
             <Save className="h-4 w-4" />
             {isSubmitting
               ? 'Saving...'
-              : loadedIrStatus === 'draft' || !editId
-                ? 'Submit Inspection Request'
-                : 'Save changes'}
+              : loadedIrStatus === 'returned_to_designer'
+                ? 'Resubmit for Part I Approval'
+                : loadedIrStatus === 'draft' || !editId
+                  ? 'Submit Inspection Request'
+                  : 'Save changes'}
           </Button>
         </div>
       </form>
@@ -2839,6 +3145,22 @@ function NewInspectionRequestForm() {
           </DialogHeader>
           <DialogFooter>
             <Button type="button" onClick={() => setDraftNoticeOpen(false)}>
+              OK
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={instrumentsNoWarningOpen} onOpenChange={setInstrumentsNoWarningOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Warning</DialogTitle>
+            <DialogDescription>
+              Inspection stage may be liable for rejection
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" onClick={() => setInstrumentsNoWarningOpen(false)}>
               OK
             </Button>
           </DialogFooter>

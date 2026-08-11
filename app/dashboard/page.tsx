@@ -16,6 +16,8 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { formatCalendarDateDisplay } from '@/lib/inspection-display';
 import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
+import { usePermissions } from '@/lib/hooks/usePermissions';
+import { employeeIsPart1Approver } from '@/lib/part1-approver';
 
 interface DashboardStats {
   byStatus: Array<{ status: string; count: string }>;
@@ -40,6 +42,7 @@ const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
   pending: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
   pending_request_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  pending_part1_approval: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
   request_approved: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   assigned: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   in_progress: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
@@ -52,13 +55,29 @@ const STATUS_COLORS: Record<string, string> = {
   returned_to_designer: 'bg-orange-100 text-orange-900 dark:bg-orange-950/40 dark:text-orange-200',
 };
 
-const STATUS_BAR_COLORS: Record<string, string> = {
-  draft: 'bg-gray-400', pending: 'bg-gray-400', pending_request_approval: 'bg-amber-500',
-  request_approved: 'bg-sky-500', assigned: 'bg-blue-500', in_progress: 'bg-yellow-500',
-  inspection_completed: 'bg-teal-500', completed: 'bg-green-500', approved: 'bg-emerald-500',
-  pending_ordaqa_approval: 'bg-purple-500', // legacy rejected: 'bg-red-500', closed: 'bg-slate-500',
-  returned_to_designer: 'bg-orange-500',
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Draft',
+  pending: 'Pending',
+  pending_request_approval: 'Pending Forward',
+  pending_part1_approval: 'Pending Part I Approval',
+  request_approved: 'Part I Approved / Forwarded',
+  assigned: 'Assigned',
+  in_progress: 'In Progress',
+  inspection_completed: 'Inspection Completed',
+  pending_qa_approval: 'Pending QA Approval',
+  qa_approved: 'QA Approved',
+  pending_ordaqa_approval: 'Pending ORDAQA',
+  completed: 'Completed',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  closed: 'Closed',
+  returned_to_designer: 'Returned to Designer',
 };
+
+function formatStatusLabel(status?: string | null): string {
+  if (!status) return '—';
+  return STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 const ROLE_CONFIG: Record<string, { label: string; color: string; icon: any; greeting: string }> = {
   administrator: { label: 'Administrator', color: 'bg-purple-600', icon: Crown, greeting: 'System overview at a glance.' },
@@ -79,7 +98,9 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; icon: any; gre
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
+  const permissions = usePermissions();
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [inspectionRequests, setInspectionRequests] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [obsChatStats, setObsChatStats] = useState({ openCount: 0, unreadCount: 0, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -88,6 +109,8 @@ export default function DashboardPage() {
   const userRole =
     rawRole === 'os' || rawRole === 'director' ? 'os_director' : rawRole;
   const userDesignation = (session?.user as any)?.designation || '';
+  const employeeId = (session?.user as any)?.employee_id as string | undefined;
+  const isPart1Approver = employeeIsPart1Approver(employeeId) || permissions.isPart1Approver();
   const roleConfig = ROLE_CONFIG[userRole] || ROLE_CONFIG.initiator;
   const RoleIcon = roleConfig.icon;
 
@@ -127,16 +150,25 @@ export default function DashboardPage() {
 
   const fetchData = async () => {
     try {
-      const [statsRes, notifRes, obsChatRes] = await Promise.all([
+      const [statsRes, listRes, notifRes, obsChatRes] = await Promise.all([
         fetch('/api/inspection-requests/stats'),
+        fetch('/api/inspection-requests'),
         fetch('/api/notifications?unread_only=true&limit=5'),
         roleCanViewObservationChats(userRole)
           ? fetch('/api/observation-chats?exclude_closed=true')
           : Promise.resolve(null),
       ]);
       const statsData = await statsRes.json();
+      const listData = await listRes.json();
       const notifData = await notifRes.json();
       if (statsData.stats) setStats(statsData.stats);
+      if (Array.isArray(listData.requests)) {
+        setInspectionRequests(
+          listData.requests.filter((r: any) => r.status !== 'draft')
+        );
+      } else if (Array.isArray(statsData.stats?.recentRequests)) {
+        setInspectionRequests(statsData.stats.recentRequests);
+      }
       if (notifData.notifications) setNotifications(notifData.notifications);
       if (obsChatRes) {
         const obsData = await obsChatRes.json();
@@ -166,8 +198,10 @@ export default function DashboardPage() {
     );
   }
 
-  const getCount = (s: string) => parseInt(stats?.byStatus.find(x => x.status === s)?.count || '0');
-  const total = stats?.byStatus.reduce((sum, s) => sum + parseInt(s.count), 0) || 0;
+  const total =
+    stats?.byStatus
+      .filter((s) => s.status !== 'draft')
+      .reduce((sum, s) => sum + parseInt(s.count), 0) || 0;
   const actions = stats?.actionItems || {};
 
   return (
@@ -223,7 +257,23 @@ export default function DashboardPage() {
 
       {/* Role-Specific Action Cards */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        {userRole === 'administrator' && (
+        {isPart1Approver && (
+          <>
+            <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
+            <StatCard
+              icon={Clock}
+              label="Pending Part I Approval"
+              value={actions.pending_part1_approval || actions.pending_approval || 0}
+              sub="Awaiting your Part I approval"
+              color="blue"
+              highlight={!!(actions.pending_part1_approval || actions.pending_approval)}
+              href="/dashboard/inspections?highlight=pending_part1"
+            />
+            <StatCard icon={UserCheck} label="Needs Assignment" value={actions.needs_assignment || 0} sub="No inspector assigned" color="saffron" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=needs_assignment" />
+            <StatCard icon={AlertCircle} label="Overdue" value={stats?.overdue || 0} sub="Past due date" color="red" highlight={!!stats?.overdue} href="/dashboard/inspections?highlight=overdue" />
+          </>
+        )}
+        {!isPart1Approver && userRole === 'administrator' && (
           <>
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
             <StatCard icon={Users} label="Active Users" value={actions.total_users || 0} sub="System users" color="violet" href="/dashboard/users" />
@@ -231,7 +281,7 @@ export default function DashboardPage() {
             <StatCard icon={AlertCircle} label="Needs Action" value={(actions.pending_approval || 0) + (actions.needs_assignment || 0)} sub={`${actions.pending_approval || 0} approvals, ${actions.needs_assignment || 0} assignments`} color="amber" href="/dashboard/inspections?highlight=action" />
           </>
         )}
-        {(userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director') && (
+        {!isPart1Approver && (userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director') && (
           <>
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
             <StatCard icon={Clock} label="Pending Forward" value={actions.pending_approval || 0} sub={userRole === 'os_director' ? 'Awaiting request approval' : 'Awaiting your review'} color="blue" highlight={!!actions.pending_approval} href="/dashboard/inspections?highlight=pending_forward" />
@@ -239,15 +289,22 @@ export default function DashboardPage() {
             <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="teal" />
           </>
         )}
-        {userRole === 'ordaqa_head' && (
+        {!isPart1Approver && userRole === 'ordaqa_head' && (
           <>
             <StatCard icon={CheckSquare} label="ORDAQA Inspections" value={total} sub="Forwarded to ORDAQA" color="violet" href="/dashboard/inspections" />
-            <StatCard icon={Activity} label="Active at ORDAQA" value={actions.pending_approval || 0} sub="Assigned or in progress" color="blue" highlight={!!actions.pending_approval} href="/dashboard/inspections?highlight=in_progress" />
+            <StatCard
+              icon={Activity}
+              label="Active at ORDAQA"
+              value={actions.active_ordaqa || 0}
+              sub="Assigned or in progress"
+              color="blue"
+              href="/dashboard/inspections?highlight=in_progress"
+            />
             <StatCard icon={Shield} label="Part V Pending" value={actions.needs_assignment || 0} sub="Awaiting your approval" color="saffron" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=action" />
             <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="teal" />
           </>
         )}
-        {userRole === 'request_approver' && (
+        {!isPart1Approver && userRole === 'request_approver' && (
           <>
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
             <StatCard icon={Clock} label="Pending Forward" value={actions.pending_approval || 0} sub="Awaiting your review" color="blue" highlight={!!actions.pending_approval} href="/dashboard/inspections?highlight=pending_forward" />
@@ -255,26 +312,54 @@ export default function DashboardPage() {
             <StatCard icon={AlertCircle} label="Overdue" value={stats?.overdue || 0} sub="Past due date" color="red" highlight={!!stats?.overdue} href="/dashboard/inspections?highlight=overdue" />
           </>
         )}
-        {(userRole === 'inspector' || userRole === 'ordaqa_inspector') && (
+        {!isPart1Approver && (userRole === 'inspector' || userRole === 'ordaqa_inspector') && (
           <>
-            <StatCard icon={ClipboardCheck} label="Assigned to Me" value={actions.my_assigned || 0} sub="Waiting to start" color="blue" highlight={!!actions.my_assigned} href="/dashboard/inspections?highlight=assigned" />
+            <StatCard
+              icon={ClipboardCheck}
+              label={userRole === 'inspector' ? 'Part IV Pending' : 'Part V Pending'}
+              value={
+                userRole === 'inspector'
+                  ? (actions.pending_part4 || 0)
+                  : (actions.pending_part5 || 0)
+              }
+              sub={userRole === 'inspector' ? 'Fill Part IV report' : 'Fill Part V (Sections 24–25)'}
+              color="blue"
+              highlight={
+                userRole === 'inspector'
+                  ? !!actions.pending_part4
+                  : !!actions.pending_part5
+              }
+              href={
+                userRole === 'inspector'
+                  ? '/dashboard/inspections?highlight=pending_part4'
+                  : '/dashboard/inspections?highlight=pending_part5'
+              }
+            />
             <StatCard icon={Activity} label="In Progress" value={actions.my_in_progress || 0} sub="Currently working" color="amber" href="/dashboard/inspections?highlight=in_progress" />
             <StatCard icon={AlertCircle} label="Overdue" value={stats?.overdue || 0} sub="Past due date" color="red" highlight={!!stats?.overdue} href="/dashboard/inspections?highlight=overdue" />
             <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="green" />
           </>
         )}
-        {userRole === 'initiator' && (
+        {!isPart1Approver && userRole === 'initiator' && (
           <>
             <StatCard icon={FileText} label="My Requests" value={total} sub="Total submitted" color="blue" href="/dashboard/inspections" />
-            <StatCard icon={FileText} label="Drafts" value={actions.my_drafts || 0} sub="Not yet submitted" color="gray" highlight={!!actions.my_drafts} href="/dashboard/inspections?highlight=drafts" />
-            <StatCard icon={Clock} label="Pending" value={actions.my_pending || 0} sub="Awaiting action" color="amber" href="/dashboard/inspections?highlight=pending" />
-            <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="green" />
+            <StatCard
+              icon={AlertCircle}
+              label="Returned to Designer"
+              value={actions.returned_to_designer || 0}
+              sub="Update Part I and resubmit"
+              color="red"
+              highlight={!!actions.returned_to_designer}
+              href="/dashboard/inspections?highlight=returned_to_designer"
+            />
+            <StatCard icon={FileText} label="Drafts" value={actions.my_drafts || 0} sub="Not yet submitted" color="teal" highlight={!!actions.my_drafts} href="/dashboard/inspections?highlight=drafts" />
+            <StatCard icon={Clock} label="Pending" value={actions.my_pending || 0} sub="Awaiting action" color="violet" href="/dashboard/inspections?highlight=pending" />
           </>
         )}
       </div>
 
       {/* Quick Actions for Approver roles */}
-      {(userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'request_approver' || userRole === 'administrator') && (actions.pending_approval > 0 || actions.needs_assignment > 0) && (
+      {(isPart1Approver || userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'request_approver' || userRole === 'administrator') && (actions.pending_approval > 0 || actions.needs_assignment > 0 || (actions.pending_part1_approval || 0) > 0) && (
         <Card className="border-0 shadow-sm bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 border-l-4 border-l-amber-500">
           <CardContent className="py-4">
             <div className="flex items-center justify-between">
@@ -285,14 +370,97 @@ export default function DashboardPage() {
                 <div>
                   <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Action Required</p>
                   <p className="text-xs text-amber-700 dark:text-amber-400">
-                    {actions.pending_approval > 0 && `${actions.pending_approval} pending approval`}
-                    {actions.pending_approval > 0 && actions.needs_assignment > 0 && ' · '}
-                    {actions.needs_assignment > 0 && `${actions.needs_assignment} need inspector assignment`}
+                    {isPart1Approver && (actions.pending_part1_approval || actions.pending_approval) > 0 && (
+                      <>{actions.pending_part1_approval || actions.pending_approval} pending Part I approval</>
+                    )}
+                    {!isPart1Approver && actions.pending_approval > 0 && `${actions.pending_approval} pending approval`}
+                    {!isPart1Approver && actions.pending_approval > 0 && actions.needs_assignment > 0 && ' · '}
+                    {!isPart1Approver && actions.needs_assignment > 0 && `${actions.needs_assignment} need inspector assignment`}
+                    {isPart1Approver && (actions.needs_assignment || 0) > 0 && (
+                      <> · {actions.needs_assignment} need inspector assignment</>
+                    )}
                   </p>
                 </div>
               </div>
               <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white h-8 text-xs" asChild>
-                <Link href="/dashboard/inspections?action=review">Review Now</Link>
+                <Link href={isPart1Approver ? '/dashboard/inspections?highlight=pending_part1' : '/dashboard/inspections?action=review'}>
+                  Review Now
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'initiator' && (actions.returned_to_designer || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20 border-l-4 border-l-orange-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-orange-100 dark:bg-orange-900/40 p-2 rounded-lg">
+                  <AlertCircle className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-orange-900 dark:text-orange-200">Action Required</p>
+                  <p className="text-xs text-orange-700 dark:text-orange-400">
+                    {actions.returned_to_designer} inspection request
+                    {actions.returned_to_designer === 1 ? '' : 's'} returned — update Part I and resubmit
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-orange-600 hover:bg-orange-700 text-white h-8 text-xs" asChild>
+                <Link href="/dashboard/inspections?highlight=returned_to_designer">
+                  Review Now
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'inspector' && (actions.pending_part4 || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/20 dark:to-teal-950/20 border-l-4 border-l-emerald-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-emerald-100 dark:bg-emerald-900/40 p-2 rounded-lg">
+                  <ClipboardCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">Action Required</p>
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                    {actions.pending_part4} inspection request
+                    {actions.pending_part4 === 1 ? '' : 's'} awaiting Part IV
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs" asChild>
+                <Link href="/dashboard/inspections?highlight=pending_part4">
+                  Fill Part IV
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'ordaqa_inspector' && (actions.pending_part5 || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-cyan-50 to-sky-50 dark:from-cyan-950/20 dark:to-sky-950/20 border-l-4 border-l-cyan-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-cyan-100 dark:bg-cyan-900/40 p-2 rounded-lg">
+                  <ClipboardCheck className="h-4 w-4 text-cyan-600 dark:text-cyan-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-cyan-900 dark:text-cyan-200">Action Required</p>
+                  <p className="text-xs text-cyan-700 dark:text-cyan-400">
+                    {actions.pending_part5} inspection request
+                    {actions.pending_part5 === 1 ? '' : 's'} awaiting Part V
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-cyan-600 hover:bg-cyan-700 text-white h-8 text-xs" asChild>
+                <Link href="/dashboard/inspections?highlight=pending_part5">
+                  Fill Part V
+                </Link>
               </Button>
             </div>
           </CardContent>
@@ -309,7 +477,7 @@ export default function DashboardPage() {
                 <div>
                   <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">Action Required</p>
                   <p className="text-xs text-violet-700 dark:text-violet-400">
-                    {actions.pending_approval > 0 && `${actions.pending_approval} active at ORDAQA`}
+                    {actions.pending_approval > 0 && `${actions.pending_approval} pending Part III`}
                     {actions.pending_approval > 0 && actions.needs_assignment > 0 && ' · '}
                     {actions.needs_assignment > 0 && `${actions.needs_assignment} Part V awaiting approval`}
                   </p>
@@ -382,163 +550,199 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {/* Main Content Grid */}
-      <div className="grid gap-6 lg:grid-cols-5">
-        {/* Recent Inspections — wider */}
-        <Card className="lg:col-span-3 border-0 shadow-sm">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base">Recent Inspections</CardTitle>
-                <CardDescription className="text-xs">Latest inspection requests</CardDescription>
-              </div>
-              <Button variant="ghost" size="sm" className="text-xs h-8 text-muted-foreground" asChild>
-                <Link href="/dashboard/inspections">View All <ArrowRight className="ml-1 h-3 w-3" /></Link>
-              </Button>
+      {/* Notifications */}
+      <Card className="border-0 shadow-sm max-w-xl">
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Notifications</CardTitle>
+            {notifications.length > 0 && (
+              <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{notifications.length}</Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {notifications.length > 0 ? (
+            <div className="space-y-3">
+              {notifications.slice(0, 5).map((n) => (
+                <div key={n.id} className="flex items-start gap-2.5">
+                  <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                    n.type === 'error' ? 'bg-red-500' : n.type === 'warning' ? 'bg-amber-500' : n.type === 'success' ? 'bg-green-500' : 'bg-blue-500'
+                  }`} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium leading-tight">{n.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{(() => { try { const d = new Date(n.created_at); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; } catch { return n.created_at; } })()}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          </CardHeader>
-          <CardContent className="px-0 pb-0">
-            {stats?.recentRequests && stats.recentRequests.length > 0 ? (
-              <div className="divide-y">
-                {stats.recentRequests.slice(0, 6).map((r) => (
-                  <Link key={r.id} href={`/dashboard/inspections/${r.id}`} className="flex items-center gap-3 px-6 py-3 hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors group">
-                    <div className={`w-1.5 h-8 rounded-full shrink-0 ${STATUS_BAR_COLORS[r.status] || 'bg-gray-300'}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-muted-foreground">{r.request_number}</span>
-                        <Badge className={`text-[10px] px-1.5 py-0 ${STATUS_COLORS[r.status] || ''}`}>
-                          {(r.status || '').replace(/_/g, ' ')}
-                        </Badge>
-                      </div>
-                      <p className="text-sm font-medium truncate mt-0.5">{r.title || r.item || '—'}</p>
-                      <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-                        {r.initiator_name && <span>{r.initiator_name}</span>}
-                        {r.due_date && (
-                          <span className="flex items-center gap-1">
-                            <Calendar className="h-3 w-3" />
-                            {formatCalendarDateDisplay(r.due_date)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                  </Link>
-                ))}
-              </div>
-            ) : (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                No recent inspections
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Right sidebar */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Notifications */}
-          <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Bell className="h-4 w-4 text-muted-foreground" />
-                <CardTitle className="text-base">Notifications</CardTitle>
-                {notifications.length > 0 && (
-                  <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{notifications.length}</Badge>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
-              {notifications.length > 0 ? (
-                <div className="space-y-3">
-                  {notifications.slice(0, 4).map((n) => (
-                    <div key={n.id} className="flex items-start gap-2.5">
-                      <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
-                        n.type === 'error' ? 'bg-red-500' : n.type === 'warning' ? 'bg-amber-500' : n.type === 'success' ? 'bg-green-500' : 'bg-blue-500'
-                      }`} />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium leading-tight">{n.title}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{n.message}</p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">{(() => { try { const d = new Date(n.created_at); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; } catch { return n.created_at; } })()}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground text-center py-6">No new notifications</p>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Upcoming */}
-          {(stats?.upcoming || 0) > 0 && (
-            <Card className="border-0 shadow-sm">
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="bg-blue-50 dark:bg-blue-950/40 p-2 rounded-lg">
-                    <Calendar className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold">{stats!.upcoming} upcoming</p>
-                    <p className="text-xs text-muted-foreground">Due within 7 days</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+          ) : (
+            <p className="text-sm text-muted-foreground text-center py-6">No new notifications</p>
           )}
+        </CardContent>
+      </Card>
 
-          {/* Avg Completion */}
-          {parseFloat(stats?.avgCompletionDays || '0') > 0 && (
-            <Card className="border-0 shadow-sm">
-              <CardContent className="pt-5 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="bg-green-50 dark:bg-green-950/40 p-2 rounded-lg">
-                    <TrendingUp className="h-4 w-4 text-green-600 dark:text-green-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold">{stats!.avgCompletionDays} days</p>
-                    <p className="text-xs text-muted-foreground">Avg. completion time this month</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+      {/* All IRs — clear table for every role */}
+      <Card className="border-0 shadow-sm">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">Summary of inspection requests</CardTitle>
+              <CardDescription className="text-xs">
+                {inspectionRequests.length > 0
+                  ? `Showing ${inspectionRequests.length} request${inspectionRequests.length === 1 ? '' : 's'} in your scope`
+                  : 'No inspection requests in your scope'}
+              </CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" className="text-xs h-8 text-muted-foreground self-start sm:self-auto" asChild>
+              <Link href="/dashboard/inspections">
+                View All <ArrowRight className="ml-1 h-3 w-3" />
+              </Link>
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="px-0 pb-0">
+          {inspectionRequests.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[760px]">
+                <thead>
+                  <tr className="border-y bg-muted/40 text-left">
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">IR No.</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Project / Programme</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">Status</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Initiator</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Inspector</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">Due date</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">Created</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground w-10" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {inspectionRequests.map((r) => {
+                    const inspectors =
+                      (r.inspector_names && String(r.inspector_names).trim()) ||
+                      r.inspector_name ||
+                      '—';
+                    const projectLabel =
+                      r.project_name ||
+                      r.programme_name ||
+                      r.project_code ||
+                      '—';
+                    return (
+                      <tr
+                        key={r.id}
+                        className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors"
+                      >
+                        <td className="px-4 py-3 align-top">
+                          <Link
+                            href={`/dashboard/inspections/${r.id}`}
+                            className="font-mono text-xs font-semibold text-primary hover:underline"
+                          >
+                            {r.request_number || `IR-${r.id}`}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <p className="font-medium text-foreground leading-snug max-w-[320px]">
+                            {projectLabel}
+                          </p>
+                          {r.project_code && r.project_name ? (
+                            <p className="text-xs text-muted-foreground mt-0.5 font-mono">
+                              {r.project_code}
+                            </p>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 align-top whitespace-nowrap">
+                          <Badge className={`text-[11px] font-medium ${STATUS_COLORS[r.status] || 'bg-gray-100 text-gray-700'}`}>
+                            {formatStatusLabel(r.status)}
+                          </Badge>
+                          {(() => {
+                            const forwardedStatuses = new Set([
+                              'pending_request_approval',
+                              'pending_part1_approval',
+                              'request_approved',
+                              'assigned',
+                              'in_progress',
+                              'inspection_completed',
+                              'pending_qa_approval',
+                              'qa_approved',
+                              'pending_ordaqa_approval',
+                              'completed',
+                              'approved',
+                              'closed',
+                              'returned_to_designer',
+                              'pending',
+                            ]);
+                            const showPart1Route = forwardedStatuses.has(String(r.status || ''));
+                            if (!showPart1Route) return null;
+                            const forwardedTo =
+                              r.request_approver_name ||
+                              r.nominated_request_approver_name ||
+                              null;
+                            const approvedBy =
+                              [
+                                'pending_part1_approval',
+                                'pending_request_approval',
+                                'pending',
+                                'draft',
+                                'rejected',
+                                'returned_to_designer',
+                              ].includes(String(r.status || ''))
+                                ? null
+                                : r.part1_approved_by_name?.trim() || null;
+                            if (!forwardedTo && !approvedBy && String(r.status) !== 'pending_part1_approval') {
+                              return null;
+                            }
+                            return (
+                              <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground leading-snug max-w-[180px]">
+                                <p>
+                                  <span className="font-medium text-foreground/80">Forwarded to:</span>{' '}
+                                  {forwardedTo || '—'}
+                                </p>
+                                <p>
+                                  <span className="font-medium text-foreground/80">Approved by:</span>{' '}
+                                  {approvedBy || (String(r.status) === 'pending_part1_approval' ? 'Pending' : '—')}
+                                </p>
+                              </div>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm whitespace-nowrap">
+                          {r.initiator_name || '—'}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm max-w-[160px]">
+                          <span className="line-clamp-2">{inspectors}</span>
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm whitespace-nowrap tabular-nums">
+                          {r.due_date ? formatCalendarDateDisplay(r.due_date) : '—'}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm whitespace-nowrap tabular-nums text-muted-foreground">
+                          {r.created_at
+                            ? formatCalendarDateDisplay(r.created_at)
+                            : r.request_date
+                              ? formatCalendarDateDisplay(r.request_date)
+                              : '—'}
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" asChild>
+                            <Link href={`/dashboard/inspections/${r.id}`} aria-label={`Open ${r.request_number}`}>
+                              <Eye className="h-4 w-4" />
+                            </Link>
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              No inspection requests to display
+            </div>
           )}
-        </div>
-      </div>
-
-      {/* Status Overview */}
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card className="border-0 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">By Status</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {stats?.byStatus && stats.byStatus.length > 0 ? (
-              <div className="space-y-2.5">
-                {stats.byStatus.map((item) => {
-                  const count = parseInt(item.count);
-                  const pct = total > 0 ? (count / total) * 100 : 0;
-                  return (
-                    <div key={item.status} className="flex items-center gap-3">
-                      <div className="w-[110px] text-xs capitalize truncate text-muted-foreground">
-                        {item.status.replace(/_/g, ' ')}
-                      </div>
-                      <div className="flex-1 h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all ${STATUS_BAR_COLORS[item.status] || 'bg-gray-400'}`}
-                          style={{ width: `${Math.max(pct, 2)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-semibold w-8 text-right tabular-nums">{count}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground text-center py-6">No data available</p>
-            )}
-          </CardContent>
-        </Card>
-
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Admin-Only Quick Links */}
       {userRole === 'administrator' && (

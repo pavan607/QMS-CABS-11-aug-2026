@@ -7,6 +7,7 @@ import {
   notifyQaHeadsResubmittedAfterReturn,
   notifyQaApproverSendBack,
   notifyRequestApproversPendingForward,
+  notifyPart1ApproverAfterRequestApproverForward,
   notifyQaHeadsAfterRequestApproverForward,
   notifyNominatedTeamHeadQaPart2,
   notifyOrdaqaHeadsForwardedToOrdaqa,
@@ -22,7 +23,6 @@ import {
   notifyOrdaqaHeadsPart5PendingApproval,
   notifyOrdaqaAssigneePart5SentBack,
   notifyOrdaqaAssigneePart5Approved,
-  notifyPart2InspectorsPart5ApprovedForInspection,
   notifyInitiatorIrMilestone,
   notifyInspectionRejected,
   notifyInspectionCompleted,
@@ -43,8 +43,10 @@ import {
   canUserCompleteInspection,
   canUserStartInspection,
   inspectionReadyToStart,
+  inspectionReadyForFinalTeamHeadApproval,
   inspectionRequiresOrdqaPart5,
   canUserUpdatePart4,
+  canUserTeamHeadEditPart4,
   inspectionReportsReadyForTeamHead,
   inspectionSkipsPart2Part3,
   isForwardedToOrdqa,
@@ -56,12 +58,15 @@ import {
   part4BlockedByPart3,
   part4PendingTeamHeadApproval,
   getPart4TeamHeadApprovalStatusRaw,
+  validatePart1DocumentDetailsForward,
 } from '@/lib/inspection-display';
 import {
   userCanAccessInspectionRequest,
   collectInspectorIds,
   parseInspectorIds,
 } from '@/lib/inspection-access';
+import { employeeIsPart1Approver, PART1_APPROVER_EMPLOYEE_ID } from '@/lib/part1-approver';
+import { canActAsNominatedRequestCertifier } from '@/lib/request-certifier';
 import { isEligibleRqaTeamHead } from '@/lib/rqa-users';
 
 async function notifyInitiatorRequestApproverSendBack(
@@ -162,39 +167,46 @@ function isNominatedTeamHeadActor(ir: { nominated_team_head_id?: unknown }, acto
   return Number(ir.nominated_team_head_id) === actorUserId;
 }
 
-/** Nominated Request Approver (field 21) takes precedence; otherwise initiator must sit under this approver's subtree. */
-async function assertRequestApproverActingOnIr(
+/** Part I approval (after RA forward) is restricted to employee 1021 or admin. */
+function assertPart1ApproverActingOnIr(
   userRole: string,
+  employeeId?: string | null
+): NextResponse | undefined {
+  if (userRole === 'administrator') return undefined;
+  if (employeeIsPart1Approver(employeeId)) return undefined;
+  return NextResponse.json(
+    {
+      error: `Only employee ${PART1_APPROVER_EMPLOYEE_ID} (Part I approver) can act on this IR`,
+    },
+    { status: 403 }
+  );
+}
+
+/** Request Approver (or nominated DH + Initiator/Designer) forward/send-back/reject on the first queue. */
+function assertRequestApproverActingOnIr(
+  ir: { nominated_request_approver_id?: unknown },
   userId: number,
-  ir: { nominated_request_approver_id?: unknown; initiator_id: number }
-): Promise<NextResponse | undefined> {
-  if (userRole !== 'request_approver') return undefined;
-  const nominated = toPositiveInt(ir.nominated_request_approver_id);
-  if (nominated != null) {
-    if (userId !== nominated) {
-      return NextResponse.json(
-        { error: 'Only the nominated Request Approver (field 21) can act on this IR' },
-        { status: 403 }
-      );
-    }
+  userRole: string,
+  designation?: string | null
+): NextResponse | undefined {
+  if (canActAsNominatedRequestCertifier(userId, userRole, designation, ir)) {
     return undefined;
   }
-  const teamCheck = await query(
-    `WITH RECURSIVE team AS (
-      SELECT id FROM users WHERE reporting_to = $1
-      UNION ALL
-      SELECT u.id FROM users u INNER JOIN team t ON u.reporting_to = t.id
-    )
-    SELECT id FROM team WHERE id = $2`,
-    [userId, ir.initiator_id]
-  );
-  if (teamCheck.rows.length === 0) {
+  const nominated =
+    ir.nominated_request_approver_id != null ? Number(ir.nominated_request_approver_id) : null;
+  if (nominated != null && Number.isFinite(nominated) && nominated > 0 && nominated !== userId) {
     return NextResponse.json(
-      { error: 'You can only process requests from your team members' },
+      { error: 'Only the nominated Request Approver (field 21) can perform this action' },
       { status: 403 }
     );
   }
-  return undefined;
+  return NextResponse.json(
+    {
+      error:
+        'Only the nominated Request Approver, or Initiator/Designer with designation DH selected on field 21, can perform this action',
+    },
+    { status: 403 }
+  );
 }
 
 async function logActivity(irId: string, type: string, description: string, userId: number) {
@@ -215,6 +227,15 @@ async function ensureRequestApproverSendBackColumn(): Promise<void> {
 async function ensureRequestApproverForwardCommentColumn(): Promise<void> {
   await query(
     `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS request_approver_forward_comment TEXT`
+  );
+}
+
+async function ensurePart1ApprovedByColumn(): Promise<void> {
+  await query(
+    `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS part1_approved_by INTEGER`
+  );
+  await query(
+    `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS part1_approved_at TIMESTAMPTZ`
   );
 }
 
@@ -252,6 +273,7 @@ export async function POST(
     const userId = parseInt((session.user as any).id);
     const userRole = (session.user as any).role;
     const employeeId = (session.user as any).employee_id as string | undefined;
+    const designation = (session.user as any).designation as string | undefined;
     const body = await request.json();
     const { action } = body;
 
@@ -261,7 +283,7 @@ export async function POST(
     }
     const ir = existing.rows[0];
 
-    const canAccess = await userCanAccessInspectionRequest(userRole, userId, ir, employeeId);
+    const canAccess = await userCanAccessInspectionRequest(userRole, userId, ir, employeeId, designation);
     if (!canAccess) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -296,7 +318,7 @@ export async function POST(
            WHERE id = $1`,
           [id]
         );
-        await logActivity(id, 'submitted', 'IR submitted for Request Approver approval', userId);
+        await logActivity(id, 'submitted', 'IR submitted for Request Approver forward', userId);
         await notifyRequestApproversPendingForward(
           parseInt(id, 10),
           ir.request_number,
@@ -305,7 +327,7 @@ export async function POST(
         );
         try {
           await notifyInitiatorIrMilestone(ir.initiator_id, parseInt(id, 10), String(ir.request_number), {
-            title: 'Submitted for Request Approver',
+            title: 'Submitted for Request Approver forward',
             message: `Your inspection request ${ir.request_number} was submitted and is awaiting Request Approver forward.`,
             type: 'request_submitted',
           });
@@ -319,22 +341,33 @@ export async function POST(
       }
 
       case 'request_approve': {
-        if (userRole !== 'request_approver' && userRole !== 'administrator') {
-          return NextResponse.json({ error: 'Only Request Approver can forward' }, { status: 403 });
+        {
+          const deny = assertRequestApproverActingOnIr(ir, userId, userRole, designation);
+          if (deny) return deny;
         }
         if (ir.status !== 'pending_request_approval' && ir.status !== 'pending') {
-          return NextResponse.json({ error: 'IR is not pending forward' }, { status: 400 });
+          return NextResponse.json({ error: 'IR is not pending Request Approver forward' }, { status: 400 });
         }
-        if (userRole === 'request_approver') {
-          const deny = await assertRequestApproverActingOnIr(userRole, userId, ir);
-          if (deny) return deny;
+        {
+          let docs = ir.document_details;
+          if (typeof docs === 'string') {
+            try {
+              docs = JSON.parse(docs);
+            } catch {
+              docs = null;
+            }
+          }
+          const documentDetailsError = validatePart1DocumentDetailsForward(docs);
+          if (documentDetailsError) {
+            return NextResponse.json({ error: documentDetailsError }, { status: 400 });
+          }
         }
         const { comments } = body as { comments?: string };
         const trimmedForwardComment = typeof comments === 'string' ? comments.trim() : '';
         await ensureRequestApproverForwardCommentColumn();
         await query(
           `UPDATE inspection_requests 
-           SET status = 'request_approved', 
+           SET status = 'pending_part1_approval', 
                request_approver_id = $2, 
                request_approval_date = NOW(),
                request_approver_forward_comment = $3,
@@ -346,14 +379,14 @@ export async function POST(
           id,
           'request_forwarded',
           trimmedForwardComment
-            ? `Request forwarded by approver: ${trimmedForwardComment}`
-            : 'Request forwarded by approver',
+            ? `Request forwarded by Request Approver for Part I approval: ${trimmedForwardComment}`
+            : 'Request forwarded by Request Approver for Part I approval',
           userId
         );
         try {
           const forwardedByName =
             (session.user as { name?: string })?.name?.trim() || 'Request Approver';
-          await notifyQaHeadsAfterRequestApproverForward(
+          await notifyPart1ApproverAfterRequestApproverForward(
             parseInt(id, 10),
             ir.request_number,
             forwardedByName,
@@ -361,27 +394,103 @@ export async function POST(
             trimmedForwardComment
           );
         } catch (e) {
-          console.error('QA Head forward notification:', e);
+          console.error('Part I approver forward notification:', e);
         }
-        return NextResponse.json({ message: 'Request forwarded successfully' });
+        return NextResponse.json({ message: 'Request forwarded for Part I approval' });
+      }
+
+      case 'part1_approve': {
+        {
+          const deny = assertPart1ApproverActingOnIr(userRole, employeeId);
+          if (deny) return deny;
+        }
+        if (ir.status !== 'pending_part1_approval') {
+          return NextResponse.json(
+            { error: 'IR must be pending Part I approval (after Request Approver forward)' },
+            { status: 400 }
+          );
+        }
+        {
+          let docs = ir.document_details;
+          if (typeof docs === 'string') {
+            try {
+              docs = JSON.parse(docs);
+            } catch {
+              docs = null;
+            }
+          }
+          const documentDetailsError = validatePart1DocumentDetailsForward(docs);
+          if (documentDetailsError) {
+            return NextResponse.json({ error: documentDetailsError }, { status: 400 });
+          }
+        }
+        const { comments } = body as { comments?: string };
+        const trimmedPart1Comment = typeof comments === 'string' ? comments.trim() : '';
+        await ensureRequestApproverForwardCommentColumn();
+        await ensurePart1ApprovedByColumn();
+        const priorComment =
+          typeof ir.request_approver_forward_comment === 'string'
+            ? ir.request_approver_forward_comment.trim()
+            : '';
+        const combinedComment = [priorComment, trimmedPart1Comment ? `Part I: ${trimmedPart1Comment}` : '']
+          .filter(Boolean)
+          .join('\n') || null;
+        await query(
+          `UPDATE inspection_requests
+           SET status = 'request_approved',
+               request_approver_forward_comment = COALESCE($2, request_approver_forward_comment),
+               part1_approved_by = $3,
+               part1_approved_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [id, combinedComment, userId]
+        );
+        await logActivity(
+          id,
+          'part1_approved',
+          trimmedPart1Comment
+            ? `Part I approved by employee ${PART1_APPROVER_EMPLOYEE_ID}: ${trimmedPart1Comment}`
+            : `Part I approved by employee ${PART1_APPROVER_EMPLOYEE_ID}`,
+          userId
+        );
+        try {
+          const approvedByName =
+            (session.user as { name?: string })?.name?.trim() || `Employee ${PART1_APPROVER_EMPLOYEE_ID}`;
+          await notifyQaHeadsAfterRequestApproverForward(
+            parseInt(id, 10),
+            ir.request_number,
+            approvedByName,
+            ir.initiator_id,
+            trimmedPart1Comment || priorComment || null
+          );
+        } catch (e) {
+          console.error('QA Head Part I approval notification:', e);
+        }
+        return NextResponse.json({ message: 'Part I approved; forwarded to QA Head' });
       }
 
       case 'request_reject': {
-        if (userRole !== 'request_approver' && userRole !== 'administrator') {
-          return NextResponse.json({ error: 'Only Request Approver can reject' }, { status: 403 });
+        const isRaQueue = ir.status === 'pending_request_approval' || ir.status === 'pending';
+        const isPart1Queue = ir.status === 'pending_part1_approval';
+        if (!isRaQueue && !isPart1Queue) {
+          return NextResponse.json({ error: 'IR is not pending approval' }, { status: 400 });
         }
-        if (userRole === 'request_approver') {
-          const deny = await assertRequestApproverActingOnIr(userRole, userId, ir);
+        if (isRaQueue) {
+          const deny = assertRequestApproverActingOnIr(ir, userId, userRole, designation);
+          if (deny) return deny;
+        } else {
+          const deny = assertPart1ApproverActingOnIr(userRole, employeeId);
           if (deny) return deny;
         }
         const { reason } = body;
+        const rejectLabel = isPart1Queue ? 'Part I Approver' : 'Request Approver';
         await query(
           `UPDATE inspection_requests 
            SET status = 'rejected', 
                rejection_reason = $2,
                updated_at = NOW() 
            WHERE id = $1`,
-          [id, reason || 'Rejected by Request Approver']
+          [id, reason || `Rejected by ${rejectLabel}`]
         );
         await logActivity(id, 'rejected', `Request rejected: ${reason || 'No reason provided'}`, userId);
         try {
@@ -390,7 +499,7 @@ export async function POST(
             String(ir.request_number),
             ir.initiator_id,
             undefined,
-            reason || 'Rejected by Request Approver'
+            reason || `Rejected by ${rejectLabel}`
           );
         } catch (e) {
           console.error('Initiator request-reject notification:', e);
@@ -399,26 +508,29 @@ export async function POST(
       }
 
       case 'request_send_back': {
-        if (userRole !== 'request_approver' && userRole !== 'administrator') {
-          return NextResponse.json({ error: 'Only Request Approver can send back' }, { status: 403 });
+        // Part I Approver (1021) cannot send back — only Request Approver on their queue.
+        const isRaQueue = ir.status === 'pending_request_approval' || ir.status === 'pending';
+        if (!isRaQueue) {
+          return NextResponse.json(
+            { error: 'Send back is not available for Part I Approver' },
+            { status: 403 }
+          );
         }
-        if (ir.status !== 'pending_request_approval' && ir.status !== 'pending') {
-          return NextResponse.json({ error: 'IR is not pending Request Approver action' }, { status: 400 });
-        }
-        if (userRole === 'request_approver') {
-          const deny = await assertRequestApproverActingOnIr(userRole, userId, ir);
-          if (deny) return deny;
-        }
+        const deny = assertRequestApproverActingOnIr(ir, userId, userRole, designation);
+        if (deny) return deny;
         const { comments } = body as { comments?: string };
         const trimmed = typeof comments === 'string' ? comments.trim() : '';
         if (!trimmed) {
           return NextResponse.json({ error: 'Comment is required to send back' }, { status: 400 });
         }
         await ensureRequestApproverSendBackColumn();
+        await ensurePart1ApprovedByColumn();
         await query(
           `UPDATE inspection_requests
            SET status = 'returned_to_designer',
                request_approver_send_back_comment = $2,
+               part1_approved_by = NULL,
+               part1_approved_at = NULL,
                updated_at = NOW()
            WHERE id = $1`,
           [id, trimmed]
@@ -473,12 +585,20 @@ export async function POST(
           );
         }
         const { nominated_team_head_id: bodyNominatedId, forward_to_ordaqa: fwdOrdaqa, part2_notes: p2notes, part2_data: p2data } = body;
-        if (!bodyNominatedId) {
+        const incomingP2Early =
+          p2data && typeof p2data === 'object' ? (p2data as Record<string, unknown>) : parsePart2Data(p2data);
+        const wantsReturnEarly = incomingP2Early.return_to_designer === 'yes';
+
+        if (!bodyNominatedId && !wantsReturnEarly) {
           return NextResponse.json({ error: 'Team Head - QA must be selected' }, { status: 400 });
         }
 
         const inspectorsLocked = hasInspectorsAssigned(ir);
-        if (inspectorsLocked && Number(bodyNominatedId) !== Number(ir.nominated_team_head_id)) {
+        if (
+          bodyNominatedId &&
+          inspectorsLocked &&
+          Number(bodyNominatedId) !== Number(ir.nominated_team_head_id)
+        ) {
           return NextResponse.json(
             {
               error:
@@ -488,9 +608,19 @@ export async function POST(
           );
         }
 
-        const effectiveNominatedId = inspectorsLocked ? Number(ir.nominated_team_head_id) : Number(bodyNominatedId);
+        const effectiveNominatedId = wantsReturnEarly
+          ? bodyNominatedId
+            ? Number(bodyNominatedId)
+            : 0
+          : inspectorsLocked
+            ? Number(ir.nominated_team_head_id)
+            : Number(bodyNominatedId);
 
-        if (effectiveNominatedId > 0 && !(await isEligibleRqaTeamHead(effectiveNominatedId))) {
+        if (
+          !wantsReturnEarly &&
+          effectiveNominatedId > 0 &&
+          !(await isEligibleRqaTeamHead(effectiveNominatedId))
+        ) {
           return NextResponse.json(
             {
               error:
@@ -500,9 +630,8 @@ export async function POST(
           );
         }
 
-        const incomingP2 =
-          p2data && typeof p2data === 'object' ? (p2data as Record<string, unknown>) : parsePart2Data(p2data);
-        const wantsReturn = incomingP2.return_to_designer === 'yes';
+        const incomingP2 = incomingP2Early;
+        const wantsReturn = wantsReturnEarly;
 
         if (wantsReturn) {
           if (ir.status !== 'request_approved') {
@@ -538,7 +667,7 @@ export async function POST(
                 by_user_id: userId,
                 comments,
                 return_to_designer: 'yes',
-                nominated_team_head_id: effectiveNominatedId,
+                nominated_team_head_id: effectiveNominatedId > 0 ? effectiveNominatedId : null,
               },
             ],
           };
@@ -570,7 +699,7 @@ export async function POST(
             ir.request_number,
             ir.initiator_id,
             reqApprId,
-            effectiveNominatedId,
+            effectiveNominatedId > 0 ? effectiveNominatedId : null,
             comments,
             actorName
           );
@@ -1089,13 +1218,24 @@ export async function POST(
             { status: 403 }
           );
         }
+        // Part IV is the inspection; after Part V approval → ready for final Team Head – QA Approve & Close
         await query(
           `UPDATE inspection_requests
-           SET ordaqa_approver_id = $2, ordaqa_approval_date = NOW(), updated_at = NOW()
+           SET ordaqa_approver_id = $2,
+               ordaqa_approval_date = NOW(),
+               status = 'inspection_completed',
+               completed_date = NOW(),
+               updated_at = NOW()
            WHERE id = $1`,
           [id, userId]
         );
         await logActivity(id, 'part5_ordaqa_approved', 'Part V approved by ORDAQA Head', userId);
+        await logActivity(
+          id,
+          'inspection_completed',
+          'Inspection completed after Part V approval — awaiting Team Head – QA final approval',
+          userId
+        );
         const approverName = (session.user as { name?: string })?.name?.trim() || 'ORDAQA Head';
         try {
           const assigneeId =
@@ -1106,16 +1246,20 @@ export async function POST(
             assigneeId,
             approverName
           );
-          await notifyPart2InspectorsPart5ApprovedForInspection(
+          await notifyInspectionCompleted(
             parseInt(id, 10),
             String(ir.request_number),
-            collectInspectorIds(ir),
-            approverName
+            ir.initiator_id,
+            ir.approver_id != null ? Number(ir.approver_id) : undefined,
+            ir.nominated_team_head_id != null ? Number(ir.nominated_team_head_id) : null,
+            { skipPart2Part3: inspectionSkipsPart2Part3(ir) }
           );
         } catch (e) {
           console.error('Part V approved notification:', e);
         }
-        return NextResponse.json({ message: 'Part V approved by ORDAQA Head' });
+        return NextResponse.json({
+          message: 'Part V approved — IR ready for Team Head – QA final Approve & Close',
+        });
       }
 
       case 'ordaqa_head_part5_send_back': {
@@ -1307,19 +1451,21 @@ export async function POST(
             { status: 400 }
           );
         }
-        if (part4PendingTeamHeadApproval(ir)) {
-          return NextResponse.json(
-            { error: 'Part IV is awaiting Team Head – QA approval and cannot be edited' },
-            { status: 400 }
-          );
-        }
-        if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') {
-          return NextResponse.json(
-            { error: 'Part IV has been approved by Team Head – QA and cannot be edited' },
-            { status: 400 }
-          );
-        }
-        if (!canUserUpdatePart4(ir, userId, userRole)) {
+        const thEditingPart4 = canUserTeamHeadEditPart4(ir, userId, userRole);
+        const inspectorEditingPart4 = canUserUpdatePart4(ir, userId, userRole);
+        if (!thEditingPart4 && !inspectorEditingPart4) {
+          if (part4PendingTeamHeadApproval(ir)) {
+            return NextResponse.json(
+              { error: 'Part IV is awaiting Team Head – QA approval and cannot be edited by this role' },
+              { status: 403 }
+            );
+          }
+          if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') {
+            return NextResponse.json(
+              { error: 'Part IV has been approved by Team Head – QA and cannot be edited' },
+              { status: 400 }
+            );
+          }
           return NextResponse.json(
             {
               error: inspectionSkipsPart2Part3(ir)
@@ -1329,31 +1475,47 @@ export async function POST(
             { status: 403 }
           );
         }
-        const skipPart23 = inspectionSkipsPart2Part3(ir);
-        const part4Statuses = skipPart23
-          ? ['request_approved', 'assigned']
-          : ['assigned'];
-        if (!part4Statuses.includes(ir.status)) {
-          return NextResponse.json(
-            {
-              error:
-                ir.status === 'in_progress'
-                  ? 'Part IV cannot be edited after inspection has started'
-                  : skipPart23
-                    ? 'Part IV can be updated after Request Approver forward (Forwarded status) or after assignment, before Start Inspection'
-                    : 'Part IV can only be updated after assignment and before Start Inspection',
-            },
-            { status: 400 }
-          );
+        if (!thEditingPart4) {
+          if (part4PendingTeamHeadApproval(ir)) {
+            return NextResponse.json(
+              { error: 'Part IV is awaiting Team Head – QA approval and cannot be edited' },
+              { status: 400 }
+            );
+          }
+          if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') {
+            return NextResponse.json(
+              { error: 'Part IV has been approved by Team Head – QA and cannot be edited' },
+              { status: 400 }
+            );
+          }
         }
-        if (part4BlockedByPart3(ir)) {
-          return NextResponse.json(
-            {
-              error:
-                'Complete Part III (Section 23 — ORDAQA assignee) before saving Part IV when the IR is forwarded to ORDAQA',
-            },
-            { status: 400 }
-          );
+        const skipPart23 = inspectionSkipsPart2Part3(ir);
+        if (!thEditingPart4) {
+          const part4Statuses = skipPart23
+            ? ['request_approved', 'assigned']
+            : ['assigned'];
+          if (!part4Statuses.includes(ir.status)) {
+            return NextResponse.json(
+              {
+                error:
+                  ir.status === 'in_progress'
+                    ? 'Part IV cannot be edited after inspection has started'
+                    : skipPart23
+                      ? 'Part IV can be updated after Request Approver forward (Forwarded status) or after assignment, before Start Inspection'
+                      : 'Part IV can only be updated after assignment and before Start Inspection',
+              },
+              { status: 400 }
+            );
+          }
+          if (part4BlockedByPart3(ir)) {
+            return NextResponse.json(
+              {
+                error:
+                  'Complete Part III (Section 23 — ORDAQA assignee) before saving Part IV when the IR is forwarded to ORDAQA',
+              },
+              { status: 400 }
+            );
+          }
         }
         const { part4_data: p4dataRaw } = body;
         const p4Incoming =
@@ -1367,6 +1529,9 @@ export async function POST(
         delete p4Incoming.part4_team_head_rejected_by;
         delete p4Incoming.part4_team_head_approver_id;
         delete p4Incoming.part4_team_head_approved_at;
+        delete p4Incoming.part4_team_head_approver_name;
+        delete p4Incoming.part4_team_head_approver_designation;
+        delete p4Incoming.part4_team_head_approver_signature_path;
         delete p4Incoming.part4_return_history;
 
         const existingP4 = parsePart4Data(ir.part4_data);
@@ -1381,6 +1546,30 @@ export async function POST(
             ? normalizeRemarkWithChatId({ ...(r as Record<string, unknown>) })
             : r
         );
+
+        if (thEditingPart4) {
+          const p4data: Record<string, unknown> = {
+            ...existingP4,
+            ...p4Incoming,
+            part4_remarks: normalizedRemarks,
+            team_head_approval_status: 'pending',
+            part4_return_history: prevHistory,
+          };
+          await query(
+            `UPDATE inspection_requests
+             SET part4_data = $2, updated_at = NOW()
+             WHERE id = $1`,
+            [id, JSON.stringify(p4data)]
+          );
+          await logActivity(
+            id,
+            'part4_edited_by_team_head',
+            'Part IV updated by Team Head – QA (still pending approval)',
+            userId
+          );
+          return NextResponse.json({ message: 'Part IV updated by Team Head – QA' });
+        }
+
         const p4data: Record<string, unknown> = {
           ...p4Incoming,
           part4_remarks: normalizedRemarks,
@@ -1519,11 +1708,25 @@ export async function POST(
           }
         }
         const existingP4Approve = parsePart4Data(ir.part4_data);
+        const thSessionName = (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
+        const thUserRes = await query(
+          `SELECT name, designation, signature_path FROM users WHERE id = $1`,
+          [userId]
+        );
+        const thUser = thUserRes.rows[0] as
+          | { name?: string; designation?: string; signature_path?: string | null }
+          | undefined;
+        const thDisplayName = String(thUser?.name || thSessionName).trim();
         const mergedP4Approve: Record<string, unknown> = {
           ...existingP4Approve,
           team_head_approval_status: 'approved',
           part4_team_head_approver_id: userId,
           part4_team_head_approved_at: new Date().toISOString(),
+          part4_team_head_approver_name: thDisplayName,
+          part4_team_head_approver_designation: String(thUser?.designation || '').trim(),
+          part4_team_head_approver_signature_path: thUser?.signature_path
+            ? String(thUser.signature_path)
+            : null,
         };
         delete mergedP4Approve.part4_team_head_reject_comment;
         delete mergedP4Approve.part4_team_head_rejected_at;
@@ -1533,26 +1736,57 @@ export async function POST(
           [id, JSON.stringify(mergedP4Approve)]
         );
         await logActivity(id, 'part4_team_head_approved', 'Part IV approved by Team Head – QA', userId);
-        const thName = (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
+
+        // No Part V (skip / non-ORDAQA): Part IV is the inspection — mark completed for final Approve & Close
+        const needsPart5 = inspectionRequiresOrdqaPart5(ir);
+        if (!needsPart5) {
+          await query(
+            `UPDATE inspection_requests
+             SET status = 'inspection_completed', completed_date = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [id]
+          );
+          await logActivity(
+            id,
+            'inspection_completed',
+            'Inspection completed after Part IV approval — awaiting Team Head – QA final approval',
+            userId
+          );
+        }
+
         try {
           await notifyInspectorsPart4Approved(
             parseInt(id, 10),
             String(ir.request_number),
             collectInspectorIds(ir),
-            thName
+            thDisplayName
           );
-          if (isForwardedToOrdqa(ir) && ir.ordaqa_inspector_id) {
+          if (needsPart5 && isForwardedToOrdqa(ir) && ir.ordaqa_inspector_id) {
             await notifyOrdaqaAssigneePart4ForwardedForPart5(
               parseInt(id, 10),
               String(ir.request_number),
               Number(ir.ordaqa_inspector_id),
-              thName
+              thDisplayName
+            );
+          }
+          if (!needsPart5) {
+            await notifyInspectionCompleted(
+              parseInt(id, 10),
+              String(ir.request_number),
+              ir.initiator_id,
+              ir.approver_id != null ? Number(ir.approver_id) : undefined,
+              ir.nominated_team_head_id != null ? Number(ir.nominated_team_head_id) : null,
+              { skipPart2Part3: inspectionSkipsPart2Part3(ir) }
             );
           }
         } catch (e) {
           console.error('Part IV approved notifications:', e);
         }
-        return NextResponse.json({ message: 'Part IV approved by Team Head – QA' });
+        return NextResponse.json({
+          message: needsPart5
+            ? 'Part IV approved by Team Head – QA'
+            : 'Part IV approved — IR ready for Team Head – QA final Approve & Close',
+        });
       }
 
       case 'reject_part4': {
@@ -1643,7 +1877,7 @@ export async function POST(
           return NextResponse.json(
             {
               error:
-                'Only an inspector assigned in Part II can start inspection',
+                'Only an administrator can start inspection',
             },
             { status: 403 }
           );
@@ -1665,7 +1899,7 @@ export async function POST(
           `UPDATE inspection_requests SET status = 'in_progress', updated_at = NOW() WHERE id = $1`,
           [id]
         );
-        await logActivity(id, 'started', 'Inspection started by assigned inspector', userId);
+        await logActivity(id, 'started', 'Inspection started by administrator', userId);
         try {
           await notifyInitiatorIrMilestone(ir.initiator_id, parseInt(id, 10), String(ir.request_number), {
             title: 'Inspection started',
@@ -1682,9 +1916,7 @@ export async function POST(
         if (!canUserCompleteInspection(ir, userId, userRole)) {
           return NextResponse.json(
             {
-              error: inspectionSkipsPart2Part3(ir)
-                ? 'Only the R&QA Inspector who saved Part IV can complete inspection'
-                : 'Only an inspector assigned in Part II can complete inspection',
+              error: 'Only an administrator can complete inspection',
             },
             { status: 403 }
           );
@@ -1731,8 +1963,15 @@ export async function POST(
             { status: 403 }
           );
         }
-        if (ir.status !== 'inspection_completed') {
-          return NextResponse.json({ error: 'Inspection must be completed first' }, { status: 400 });
+        if (!inspectionReadyForFinalTeamHeadApproval(ir)) {
+          return NextResponse.json(
+            {
+              error: inspectionRequiresOrdqaPart5(ir)
+                ? 'Part V must be approved by ORDAQA Head before final Team Head – QA approval'
+                : 'Part IV must be approved before final Team Head – QA approval',
+            },
+            { status: 400 }
+          );
         }
         const skipPart23Approve = inspectionSkipsPart2Part3(ir);
         if (userRole === 'qa_approver') {
@@ -1758,6 +1997,7 @@ export async function POST(
            SET status = 'completed', 
                final_qa_approver_id = $2, 
                final_qa_approval_date = NOW(),
+               completed_date = COALESCE(completed_date, NOW()),
                updated_at = NOW() 
            WHERE id = $1`,
           [id, userId]
@@ -1784,9 +2024,13 @@ export async function POST(
             { status: 403 }
           );
         }
-        if (ir.status !== 'inspection_completed') {
+        if (!inspectionReadyForFinalTeamHeadApproval(ir)) {
           return NextResponse.json(
-            { error: 'Inspection must be completed by the inspector before Team Head can reject' },
+            {
+              error: inspectionRequiresOrdqaPart5(ir)
+                ? 'Part V must be approved by ORDAQA Head before Team Head can reject'
+                : 'Part IV must be approved before Team Head can reject',
+            },
             { status: 400 }
           );
         }

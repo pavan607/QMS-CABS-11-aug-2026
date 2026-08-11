@@ -31,6 +31,7 @@ interface ObservationChatActionsProps {
   requestNumber?: string;
   initiatorName?: string;
   canClose?: boolean;
+  canEdit?: boolean;
   onChatIdChange?: (chatId: string) => void;
   onClosed?: () => void;
   onRefreshThreadStatus?: () => void;
@@ -43,6 +44,7 @@ export function ObservationChatActions({
   remark,
   requestNumber,
   canClose = false,
+  canEdit = false,
   onChatIdChange,
   onClosed,
   onRefreshThreadStatus,
@@ -211,6 +213,7 @@ export function ObservationChatActions({
         requestNumber={requestNumber}
         canReply={canClose}
         canClose={canClose}
+        canEdit={canEdit}
         onClosed={() => {
           setIsClosed(true);
           onClosed?.();

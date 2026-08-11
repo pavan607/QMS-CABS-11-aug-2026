@@ -57,6 +57,7 @@ export async function POST(
     const userRole = (session.user as { role?: string }).role || 'initiator';
     const employeeId = (session.user as { employee_id?: string }).employee_id;
     const senderName = (session.user as { name?: string }).name || 'User';
+    const designation = (session.user as { designation?: string }).designation;
     const { threadId: threadIdParam } = await params;
     const threadId = parseInt(threadIdParam, 10);
 
@@ -90,7 +91,7 @@ export async function POST(
       return NextResponse.json({ error: 'Inspection request not found' }, { status: 404 });
     }
 
-    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId);
+    const allowed = await canAccessObservationChat(userId, userRole, ir, employeeId, designation);
     if (!allowed) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }

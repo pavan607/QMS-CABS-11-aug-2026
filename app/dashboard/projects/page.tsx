@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Fragment } from 'react';
 import {
   FolderKanban, Plus, Search, ChevronRight, ChevronDown,
   Edit, Trash2, MoreVertical, Cpu, Box, Layers, CircuitBoard, X,
+  Paperclip, Download, Loader2, FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +35,16 @@ interface Project {
   sru_count: string;
   created_by_name: string;
   created_at: string;
+}
+
+interface ProjectAttachment {
+  id: number;
+  file_name: string;
+  file_path: string;
+  file_type: string | null;
+  file_size: number | null;
+  description: string | null;
+  created_at?: string;
 }
 
 interface Subsystem {
@@ -106,6 +117,61 @@ export default function ProjectsPage() {
   const [sruForm, setSruForm] = useState({ name: '', code: '', part_number: '', description: '', status: 'active', serial_numbers: [] as string[] });
   const [lruSerialInput, setLruSerialInput] = useState('');
   const [sruSerialInput, setSruSerialInput] = useState('');
+  const [referredDocs, setReferredDocs] = useState<ProjectAttachment[]>([]);
+  const [pendingReferredFiles, setPendingReferredFiles] = useState<File[]>([]);
+  const [loadingReferredDocs, setLoadingReferredDocs] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
+
+  const formatFileSize = (bytes: number | null | undefined) => {
+    if (bytes == null) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const fetchProjectAttachments = async (projectId: number) => {
+    setLoadingReferredDocs(true);
+    try {
+      const response = await fetch(`/api/attachments?entity_type=project&entity_id=${projectId}`);
+      const data = await response.json();
+      setReferredDocs(data.attachments || []);
+    } catch (error) {
+      console.error('Error fetching referred documents:', error);
+      setReferredDocs([]);
+    } finally {
+      setLoadingReferredDocs(false);
+    }
+  };
+
+  const uploadReferredDocuments = async (projectId: number, files: File[]) => {
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('entity_type', 'project');
+      formData.append('entity_id', String(projectId));
+      formData.append('description', 'Referred Document');
+      const response = await fetch('/api/attachments', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to upload ${file.name}`);
+      }
+    }
+  };
+
+  const addPendingReferredFiles = (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    const next: File[] = [];
+    for (const file of Array.from(fileList)) {
+      if (file.size > 10 * 1024 * 1024) {
+        alert(`"${file.name}" exceeds the 10MB limit`);
+        continue;
+      }
+      next.push(file);
+    }
+    if (next.length) {
+      setPendingReferredFiles((prev) => [...prev, ...next]);
+    }
+  };
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -225,13 +291,18 @@ export default function ProjectsPage() {
 
   const openAddProject = () => {
     setProjectForm({ name: '', code: '', description: '', status: 'active' });
+    setReferredDocs([]);
+    setPendingReferredFiles([]);
     setDialogMode('add-project');
   };
 
   const openEditProject = (project: Project) => {
     setEditingItem(project);
     setProjectForm({ name: project.name, code: project.code, description: project.description || '', status: project.status });
+    setPendingReferredFiles([]);
+    setReferredDocs([]);
     setDialogMode('edit-project');
+    fetchProjectAttachments(project.id);
   };
 
   const openAddSubsystem = (projectId: number) => {
@@ -289,12 +360,17 @@ export default function ProjectsPage() {
     setContextProjectId(null);
     setContextSubsystemId(null);
     setContextLruId(null);
+    setReferredDocs([]);
+    setPendingReferredFiles([]);
+    setLoadingReferredDocs(false);
+    setSavingProject(false);
   };
 
   // --- CRUD operations ---
 
   const handleProjectSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSavingProject(true);
     try {
       const isEdit = dialogMode === 'edit-project';
       const url = isEdit ? `/api/projects/${editingItem.id}` : '/api/projects';
@@ -306,16 +382,40 @@ export default function ProjectsPage() {
         body: JSON.stringify(projectForm),
       });
 
-      if (response.ok) {
-        closeDialog();
-        fetchProjects();
-      } else {
-        const data = await response.json();
+      const data = await response.json();
+      if (!response.ok) {
         alert(data.error || 'Failed to save project');
+        return;
       }
-    } catch (error) {
+
+      const projectId = isEdit ? editingItem.id : data.project?.id;
+      if (projectId && pendingReferredFiles.length > 0) {
+        await uploadReferredDocuments(projectId, pendingReferredFiles);
+      }
+
+      closeDialog();
+      fetchProjects();
+    } catch (error: any) {
       console.error('Error saving project:', error);
-      alert('Failed to save project');
+      alert(error?.message || 'Failed to save project');
+    } finally {
+      setSavingProject(false);
+    }
+  };
+
+  const handleDeleteReferredDoc = async (attachmentId: number) => {
+    if (!confirm('Remove this referred document?')) return;
+    try {
+      const response = await fetch(`/api/attachments/${attachmentId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete attachment');
+        return;
+      }
+      setReferredDocs((prev) => prev.filter((doc) => doc.id !== attachmentId));
+    } catch (error) {
+      console.error('Error deleting referred document:', error);
+      alert('Failed to delete attachment');
     }
   };
 
@@ -897,7 +997,7 @@ export default function ProjectsPage() {
 
       {/* Project Dialog */}
       <Dialog open={dialogMode === 'add-project' || dialogMode === 'edit-project'} onOpenChange={(open) => { if (!open) closeDialog(); }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{dialogMode === 'edit-project' ? 'Edit Project' : 'New Project'}</DialogTitle>
             <DialogDescription>
@@ -929,10 +1029,108 @@ export default function ProjectsPage() {
                   </SelectContent>
                 </Select>
               </div>
+
+              <div className="grid gap-2">
+                <Label>Referred Document</Label>
+                <p className="text-xs text-muted-foreground">
+                  Upload referred / reference documents for this project (PDF, Word, images — max 10MB each).
+                </p>
+
+                {dialogMode === 'edit-project' && (
+                  <div className="space-y-2">
+                    {loadingReferredDocs ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-1">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading attachments...
+                      </div>
+                    ) : referredDocs.length > 0 ? (
+                      referredDocs.map((doc) => (
+                        <div
+                          key={doc.id}
+                          className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm"
+                        >
+                          <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate font-medium">{doc.file_name}</div>
+                            {doc.file_size != null && (
+                              <div className="text-xs text-muted-foreground">{formatFileSize(doc.file_size)}</div>
+                            )}
+                          </div>
+                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" asChild>
+                            <a href={doc.file_path} target="_blank" rel="noopener noreferrer" title="Download">
+                              <Download className="h-3.5 w-3.5" />
+                            </a>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleDeleteReferredDoc(doc.id)}
+                            title="Remove"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No referred documents uploaded yet.</p>
+                    )}
+                  </div>
+                )}
+
+                {pendingReferredFiles.length > 0 && (
+                  <div className="space-y-2">
+                    {pendingReferredFiles.map((file, index) => (
+                      <div
+                        key={`${file.name}-${file.size}-${index}`}
+                        className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm"
+                      >
+                        <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span className="flex-1 truncate">{file.name}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">{formatFileSize(file.size)}</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                          onClick={() =>
+                            setPendingReferredFiles((prev) => prev.filter((_, i) => i !== index))
+                          }
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2.5 text-sm cursor-pointer hover:bg-muted/30 transition-colors">
+                  <Paperclip className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">
+                    {pendingReferredFiles.length || referredDocs.length
+                      ? 'Add another referred document'
+                      : 'Upload referred document'}
+                  </span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    multiple
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.txt"
+                    onChange={(e) => {
+                      addPendingReferredFiles(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={closeDialog}>Cancel</Button>
-              <Button type="submit">{dialogMode === 'edit-project' ? 'Save Changes' : 'Create Project'}</Button>
+              <Button type="button" variant="outline" onClick={closeDialog} disabled={savingProject}>Cancel</Button>
+              <Button type="submit" disabled={savingProject}>
+                {savingProject ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                {dialogMode === 'edit-project' ? 'Save Changes' : 'Create Project'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

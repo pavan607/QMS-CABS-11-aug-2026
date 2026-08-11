@@ -120,11 +120,11 @@ async function main() {
         !canUserQaApproverApproveAndClose(ir, USERS.inspector, 'inspector'),
         'inspector cannot Approve & Close'
       );
-      // Wrong status blocks final approve
-      const notReady = { ...ir, status: 'in_progress' };
+      // Wrong status / not ready for final approve
+      const notReady = { ...ir, status: 'request_approved' };
       assert(
         !canUserQaApproverApproveAndClose(notReady, USERS.qaApprover, 'qa_approver'),
-        'cannot Approve & Close while still in_progress'
+        'cannot Approve & Close before Part IV / Part V ready'
       );
       pass('Before final approve: TH can Approve & Close; others cannot');
     } catch (e) {
@@ -211,11 +211,11 @@ async function main() {
       );
       assert(user.rows[0], 'qa_approver user exists');
       assert(user.rows[0].role === 'qa_approver', 'user is qa_approver');
-      assert(teamHeadFinalSignoffApproved(ir), 'final sign-off present for Part IV §30 display');
+      assert(teamHeadFinalSignoffApproved(ir), 'final Approve & Close sign-off recorded');
       console.log(
-        `  → Final approver would display as: ${user.rows[0].name} (${user.rows[0].designation || '—'})`
+        `  → Final Approve & Close approver: ${user.rows[0].name} (${user.rows[0].designation || '—'})`
       );
-      pass('Final sign-off data ready for Part IV §30 / timeline');
+      pass('Final sign-off data ready for timeline / Approve & Close');
     } catch (e) {
       fail('Display field check', e);
     }

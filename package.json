@@ -6,6 +6,7 @@
     "setup": "node setup.js",
     "setup:offline": "node setup-offline.js",
     "package": "node package-project.js",
+    "package:standalone": "node scripts/package-standalone.js",
     "vendor:npm-cache": "node scripts/vendor-npm-cache.js",
     "install:offline": "node scripts/install-offline.js",
     "dev": "node scripts/print-intranet-dev-url.js && next dev --turbopack -H 0.0.0.0",

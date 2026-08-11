@@ -4,6 +4,7 @@ import { query } from '@/lib/db';
 import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { ordqaPart5Submitted } from '@/lib/inspection-display';
 
 // GET attachments (filter by entity)
 export async function GET(request: NextRequest) {
@@ -79,7 +80,9 @@ export async function POST(request: NextRequest) {
     if (entityType === 'inspection_request') {
       const userRole = (session.user as any).role;
       const irResult = await query(
-        `SELECT initiator_id, inspector_id, ordaqa_inspector_id, status FROM inspection_requests WHERE id = $1`,
+        `SELECT initiator_id, inspector_id, ordaqa_inspector_id, status,
+                forwarded_to_ordaqa, part3_data, confirmations
+         FROM inspection_requests WHERE id = $1`,
         [parseInt(entityId)]
       );
       if (irResult.rows.length === 0) {
@@ -93,6 +96,12 @@ export async function POST(request: NextRequest) {
       const isAssignedInspector = ir.inspector_id === userId || ir.ordaqa_inspector_id === userId;
       if (userRole === 'inspector' && !isAssignedInspector) {
         return NextResponse.json({ error: 'Only an assigned inspector can upload attachments' }, { status: 403 });
+      }
+      if (userRole === 'inspector' && ordqaPart5Submitted(ir)) {
+        return NextResponse.json(
+          { error: 'Cannot upload attachments after Part V has been submitted' },
+          { status: 403 }
+        );
       }
       if (!['inspector', 'administrator', 'qa_approver', 'qa_head'].includes(userRole) && !isInitiator) {
         return NextResponse.json({ error: 'You do not have permission to upload attachments to this IR' }, { status: 403 });

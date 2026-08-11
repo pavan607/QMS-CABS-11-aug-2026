@@ -45,7 +45,14 @@ export async function DELETE(
         if (['completed', 'closed'].includes(ir.status)) {
           return NextResponse.json({ error: 'Cannot delete attachments from a completed IR' }, { status: 403 });
         }
-        if (userRole === 'inspector' && ir.inspector_id !== userId && ir.ordaqa_inspector_id !== userId) {
+        // R&QA inspectors cannot delete IR attachments
+        if (userRole === 'inspector') {
+          return NextResponse.json(
+            { error: 'R&QA inspectors cannot delete attachments' },
+            { status: 403 }
+          );
+        }
+        if (userRole === 'ordaqa_inspector') {
           return NextResponse.json({ error: 'Only an assigned inspector can delete attachments' }, { status: 403 });
         }
       }

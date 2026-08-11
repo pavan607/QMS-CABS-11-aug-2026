@@ -12,6 +12,7 @@ import {
   PanelLeftClose, PanelLeft, FolderKanban, ClipboardList, KeyRound, Loader2, Eye, EyeOff,
   UserCircle,
   MessageSquare,
+  LifeBuoy,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -102,6 +103,7 @@ export default function DashboardLayout({
     // { icon: FileText, label: 'Documents', href: '/dashboard/documents', requiresPermission: 'document:read' },
     // Quality Checks removed per CABS workflow redesign
     // { icon: ShieldCheck, label: 'Quality Checks', href: '/dashboard/quality-checks', requiresPermission: null },
+    { icon: LifeBuoy, label: 'Help Desk', href: '/dashboard/help-desk', requiresPermission: 'help_desk:read' },
     { icon: BarChart, label: 'Reports', href: '/dashboard/reports', requiresPermission: null },
     { icon: UserCircle, label: 'Profile', href: '/dashboard/profile', requiresPermission: null },
     { icon: FolderKanban, label: 'Projects', href: '/dashboard/projects', requiresPermission: 'admin_only' },
@@ -337,7 +339,7 @@ export default function DashboardLayout({
                   <Link href="#" className="text-gray-400 hover:text-[#1e3a5f] dark:text-gray-500 dark:hover:text-sky-400 transition-colors">
                     Terms
                   </Link>
-                  <Link href="#" className="text-gray-400 hover:text-[#1e3a5f] dark:text-gray-500 dark:hover:text-sky-400 transition-colors">
+                  <Link href="/dashboard/help-desk" className="text-gray-400 hover:text-[#1e3a5f] dark:text-gray-500 dark:hover:text-sky-400 transition-colors">
                     Support
                   </Link>
                 </div>

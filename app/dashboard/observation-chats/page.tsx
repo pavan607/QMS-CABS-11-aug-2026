@@ -373,6 +373,14 @@ export default function ObservationChatsPage() {
           }}
           onAcknowledged={handleChatAcknowledged}
           onMessageSent={handleChatAcknowledged}
+          onObservationEdited={(preview) => {
+            setActiveChat((prev) => (prev ? { ...prev, observation_preview: preview } : prev));
+            setThreads((prev) =>
+              prev.map((item) =>
+                item.id === activeChat.id ? { ...item, observation_preview: preview } : item
+              )
+            );
+          }}
           threadId={activeChat.id}
           inspectionRequestId={activeChat.inspection_request_id}
           part={activeChat.part}
@@ -380,6 +388,7 @@ export default function ObservationChatsPage() {
           observationPreview={activeChat.observation_preview || ''}
           isClosed={activeChat.is_closed}
           requestNumber={activeChat.request_number}
+          canEdit={userRole === 'qa_approver' || userRole === 'administrator'}
         />
       )}
     </div>

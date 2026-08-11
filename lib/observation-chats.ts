@@ -2,6 +2,8 @@ import { query } from '@/lib/db';
 import {
   collectInspectorIds,
   sqlInspectionScopeCondition,
+  sqlGroupInspectionVisibleCondition,
+  isGroupOversightDesignation,
   userCanAccessInspectionRequest,
   userHasGlobalInspectionAccess,
   type InspectionRequestScopeRow,
@@ -13,6 +15,7 @@ import {
   OBSERVATION_CHAT_VIEW_ROLES,
   roleCanViewObservationChats,
 } from '@/lib/observation-chats-shared';
+import { canUserApprovePart4, part4PendingTeamHeadApproval } from '@/lib/inspection-display';
 
 export type { ObservationPart } from '@/lib/observation-chats-shared';
 export {
@@ -136,7 +139,7 @@ export async function fetchInspectionForChatAccess(
   const result = await query(
     `SELECT ir.id, ir.request_number, ir.title, ir.status, ir.initiator_id, ir.inspector_id, ir.inspector_ids,
             ir.forwarded_to_ordaqa, ir.ordaqa_inspector_id, ir.nominated_team_head_id, ir.final_qa_approver_id,
-            ir.nominated_request_approver_id, ir.request_approver_id, ir.confirmations,
+            ir.nominated_request_approver_id, ir.request_approver_id, ir.confirmations, ir.part4_data,
             u.name AS initiator_name
      FROM inspection_requests ir
      LEFT JOIN users u ON u.id = ir.initiator_id
@@ -150,12 +153,13 @@ export async function canAccessObservationChat(
   userId: number,
   userRole: string,
   ir: InspectionRequestScopeRow,
-  employeeId?: string | null
+  employeeId?: string | null,
+  designation?: string | null
 ): Promise<boolean> {
   if (!roleCanViewObservationChats(userRole) && !userHasGlobalInspectionAccess(userRole, employeeId)) {
     return false;
   }
-  return userCanAccessInspectionRequest(userRole, userId, ir, employeeId);
+  return userCanAccessInspectionRequest(userRole, userId, ir, employeeId, designation);
 }
 
 /**
@@ -190,6 +194,115 @@ export async function canCloseObservationChat(
     );
   }
   return false;
+}
+
+/**
+ * R&QA Team Head – QA may edit Part IV observation sheet text after inspector submission
+ * (while Part IV is pending Team Head approval).
+ */
+export function canEditObservationChat(
+  userId: number,
+  userRole: string,
+  part: ObservationPart,
+  ir: InspectionRequestScopeRow & {
+    status?: string;
+    part4_data?: unknown;
+    nominated_team_head_id?: number | null;
+    confirmations?: unknown;
+  },
+  threadClosed?: boolean
+): boolean {
+  if (threadClosed) return false;
+  if (part !== 'part4') return false;
+  if (userRole === 'administrator') return part4PendingTeamHeadApproval(ir);
+  return canUserApprovePart4(ir, userId, userRole);
+}
+
+/** Update observation preview + matching Part IV Section 29 remark (Team Head edit). */
+export async function updateObservationSheetText(params: {
+  threadId: number;
+  observation: string;
+  actionRequired?: string;
+}): Promise<ObservationThreadRow> {
+  await ensureObservationChatTables();
+  const observation = params.observation.trim();
+  if (!observation) throw new Error('Observation text is required');
+  const actionRequired =
+    params.actionRequired != null ? String(params.actionRequired).trim() : undefined;
+
+  const threadRes = await query(`SELECT * FROM observation_threads WHERE id = $1`, [params.threadId]);
+  const thread = threadRes.rows[0] as ObservationThreadRow | undefined;
+  if (!thread) throw new Error('Thread not found');
+  if (thread.is_closed) throw new Error('This observation is closed and cannot be edited');
+  if (thread.part !== 'part4') throw new Error('Only Part IV observations can be edited by Team Head – QA');
+
+  const preview = observation.slice(0, 500);
+  const updatedThread = await query(
+    `UPDATE observation_threads
+     SET observation_preview = $2
+     WHERE id = $1
+     RETURNING *`,
+    [params.threadId, preview]
+  );
+
+  let resolvedAction = actionRequired ?? '';
+  const irRes = await query(
+    `SELECT part4_data FROM inspection_requests WHERE id = $1`,
+    [thread.inspection_request_id]
+  );
+  const ir = irRes.rows[0];
+  if (ir) {
+    let part4: Record<string, unknown> = {};
+    const raw = ir.part4_data;
+    if (typeof raw === 'string') {
+      try {
+        part4 = JSON.parse(raw) || {};
+      } catch {
+        part4 = {};
+      }
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      part4 = { ...(raw as Record<string, unknown>) };
+    }
+    const remarks = Array.isArray(part4.part4_remarks) ? [...(part4.part4_remarks as unknown[])] : [];
+    let changed = false;
+    const nextRemarks = remarks.map((r) => {
+      if (!r || typeof r !== 'object') return r;
+      const row = { ...(r as Record<string, unknown>) };
+      const key = String(row.chat_id ?? '').trim();
+      if (key && key === thread.observation_key) {
+        if (actionRequired === undefined) {
+          resolvedAction = String(row.action_required ?? '').trim();
+        }
+        row.observation = observation;
+        if (actionRequired !== undefined) row.action_required = actionRequired;
+        changed = true;
+      }
+      return row;
+    });
+    if (changed) {
+      part4.part4_remarks = nextRemarks;
+      await query(
+        `UPDATE inspection_requests SET part4_data = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+        [thread.inspection_request_id, JSON.stringify(part4)]
+      );
+    }
+  }
+
+  // Keep the opening "sent to initiator" chat bubble in sync with the sheet.
+  const sheetMessage = formatObservationSendMessage(observation, resolvedAction);
+  await query(
+    `UPDATE observation_messages
+     SET message = $2
+     WHERE id = (
+       SELECT id FROM observation_messages
+       WHERE thread_id = $1
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1
+     )`,
+    [params.threadId, sheetMessage]
+  );
+
+  return updatedThread.rows[0] || { ...thread, observation_preview: preview };
 }
 
 /** Stakeholder user ids who should see/be notified about observation activity on an IR. */
@@ -261,7 +374,7 @@ export async function getObservationThreadByKey(observationKey: string): Promise
 export async function listObservationThreadsForUser(
   userId: number,
   userRole: string,
-  options?: { excludeClosed?: boolean }
+  options?: { excludeClosed?: boolean; designation?: string | null }
 ): Promise<
   Array<
     ObservationThreadRow & {
@@ -282,25 +395,17 @@ export async function listObservationThreadsForUser(
 
   const params: unknown[] = [userId];
   let scopeSql = 'TRUE';
+  const isGroupLead = isGroupOversightDesignation(options?.designation);
 
   if (userHasGlobalInspectionAccess(userRole) || userRole === 'administrator') {
     scopeSql = 'TRUE';
-  } else if (userRole === 'request_approver') {
-    scopeSql = `(
-      ir.nominated_request_approver_id = $1
-      OR ir.request_approver_id = $1
-      OR (
-        ir.nominated_request_approver_id IS NULL
-        AND ir.initiator_id IN (
-          WITH RECURSIVE team AS (
-            SELECT id FROM users WHERE reporting_to = $1
-            UNION ALL
-            SELECT u.id FROM users u INNER JOIN team t ON u.reporting_to = t.id
-          )
-          SELECT id FROM team
-        )
-      )
-    )`;
+  } else if (userRole === 'request_approver' || isGroupLead) {
+    let cond = sqlGroupInspectionVisibleCondition('ir', '$1');
+    if (userRole !== 'request_approver') {
+      const roleCond = sqlInspectionScopeCondition(userRole, 'ir', '$1');
+      if (roleCond) cond = `(${cond} OR ${roleCond})`;
+    }
+    scopeSql = cond;
   } else if (userRole === 'qa_head') {
     const cond = sqlInspectionScopeCondition('qa_head', 'ir', '$1');
     scopeSql = cond || 'FALSE';

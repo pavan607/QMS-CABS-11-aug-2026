@@ -271,8 +271,12 @@ async function main() {
       );
       assert(inspectionReadyToStart(ir), 'ready to start after Part IV TH approval');
       assert(
-        canUserStartInspection(ir, USERS.inspector, 'inspector'),
-        'inspector can start after TH approval'
+        !canUserStartInspection(ir, USERS.inspector, 'inspector'),
+        'R&QA inspector cannot start inspection'
+      );
+      assert(
+        !canUserStartInspection(ir, USERS.qaApprover, 'qa_approver'),
+        'Team Head cannot start inspection'
       );
       pass('Approve unlocks Start Inspection');
     } catch (e) {

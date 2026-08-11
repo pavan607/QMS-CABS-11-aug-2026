@@ -25,6 +25,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'quality_check', actions: ['read'] }, // Can VIEW but NOT create/update
     { resource: 'attachment', actions: ['create', 'read', 'delete_own'] },
     { resource: 'document', actions: ['read'] },
+    { resource: 'help_desk', actions: ['read'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
     { resource: 'profile', actions: ['read', 'update_own'] },
@@ -37,6 +38,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'attachment', actions: ['create', 'read', 'delete_own'] },
     { resource: 'inspection_activity', actions: ['create', 'read'] },
     { resource: 'document', actions: ['create', 'read', 'update', 'delete'] },
+    { resource: 'help_desk', actions: ['read'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
     { resource: 'profile', actions: ['read', 'update_own'] },
@@ -48,6 +50,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'quality_check', actions: ['read'] },
     { resource: 'attachment', actions: ['read'] },
     { resource: 'document', actions: ['read'] },
+    { resource: 'help_desk', actions: ['read'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'user', actions: ['read'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
@@ -60,6 +63,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'checklist_item', actions: ['read'] },
     { resource: 'attachment', actions: ['read'] },
     { resource: 'document', actions: ['create', 'read', 'update', 'delete'] },
+    { resource: 'help_desk', actions: ['create', 'read', 'update', 'delete'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'user', actions: ['read'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
@@ -72,6 +76,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'checklist_item', actions: ['read'] },
     { resource: 'attachment', actions: ['read'] },
     { resource: 'document', actions: ['create', 'read', 'update', 'delete'] },
+    { resource: 'help_desk', actions: ['create', 'read', 'update', 'delete'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'user', actions: ['read'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
@@ -84,6 +89,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'checklist_item', actions: ['read'] },
     { resource: 'attachment', actions: ['read'] },
     { resource: 'document', actions: ['create', 'read', 'update', 'delete'] },
+    { resource: 'help_desk', actions: ['create', 'read', 'update', 'delete'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'user', actions: ['read'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
@@ -97,6 +103,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'attachment', actions: ['create', 'read', 'delete_own'] },
     { resource: 'inspection_activity', actions: ['create', 'read'] },
     { resource: 'document', actions: ['create', 'read', 'update', 'delete'] },
+    { resource: 'help_desk', actions: ['read'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
     { resource: 'profile', actions: ['read', 'update_own'] },
@@ -108,6 +115,7 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'checklist_item', actions: ['read'] },
     { resource: 'attachment', actions: ['read'] },
     { resource: 'document', actions: ['read'] },
+    { resource: 'help_desk', actions: ['read'] },
     { resource: 'report', actions: ['create', 'read', 'export'] },
     { resource: 'user', actions: ['read'] },
     { resource: 'notification', actions: ['read', 'update_own'] },
@@ -153,7 +161,13 @@ export function hasPermission(
 export function canUpdateInspectionRequest(
   userRole: UserRole,
   userId: number,
-  request: { initiator_id?: number; inspector_id?: number; status?: string }
+  request: {
+    initiator_id?: number;
+    inspector_id?: number;
+    status?: string;
+    nominated_request_approver_id?: number | null;
+  },
+  designation?: string | null
 ): boolean {
   // Administrator can update any request
   if (userRole === 'administrator') {
@@ -164,6 +178,24 @@ export function canUpdateInspectionRequest(
   if (
     request.initiator_id === userId &&
     ['pending', 'draft', 'returned_to_designer', 'pending_request_approval'].includes(request.status || '')
+  ) {
+    return true;
+  }
+
+  // Nominated field-21 certifier (Request Approver, or DH + Initiator/Designer) may edit Part I before forward
+  // Lazy import avoided — keep logic inline to prevent circular deps with request-certifier consumers
+  const nominated =
+    request.nominated_request_approver_id != null
+      ? Number(request.nominated_request_approver_id)
+      : null;
+  if (
+    nominated === userId &&
+    ['pending', 'pending_request_approval'].includes(request.status || '') &&
+    (userRole === 'request_approver' ||
+      (userRole === 'initiator' &&
+        String(designation || '')
+          .trim()
+          .toUpperCase() === 'DH'))
   ) {
     return true;
   }

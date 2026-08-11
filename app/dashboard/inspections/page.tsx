@@ -8,10 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { inspectionSkipsPart2Part3 } from '@/lib/inspection-display';
+import { canUserUpdatePart4, canUserUpdatePart5, inspectionSkipsPart2Part3 } from '@/lib/inspection-display';
 import { 
   Plus, Search, FileText,
-  Calendar, MapPin, User, Paperclip, AlertCircle,
+  Calendar, MapPin, User, Paperclip, AlertCircle, Edit,
 } from 'lucide-react';
 import { formatCalendarDateDisplay } from '@/lib/inspection-display';
 
@@ -27,19 +27,34 @@ interface InspectionRequest {
   inspection_type: string;
   status: string;
   due_date: string;
+  initiator_id?: number | null;
   initiator_name: string;
   inspector_name?: string;
   inspector_names?: string | null;
   inspector_id?: number;
+  nominated_request_approver_id?: number | null;
   nominated_team_head_id?: number;
   qa_approver_id?: number;
+  request_approver_id?: number | null;
+  request_approver_name?: string | null;
+  nominated_request_approver_name?: string | null;
+  part1_approver_name?: string | null;
+  part1_approved_by_name?: string | null;
+  project_name?: string | null;
+  project_code?: string | null;
+  programme_name?: string | null;
+  forwarded_to_ordaqa?: boolean | null;
+  ordaqa_inspector_id?: number | null;
+  ordaqa_approver_id?: number | null;
+  part3_data?: unknown;
+  part4_data?: unknown;
   attachment_count: number;
   created_at: string;
   confirmations?: unknown;
 }
 
 const ACTIONABLE_STATUSES: Record<string, string[]> = {
-  administrator: ['pending_request_approval', 'pending', 'request_approved', 'assigned', 'in_progress', 'inspection_completed'],
+  administrator: ['pending_request_approval', 'pending', 'pending_part1_approval', 'request_approved', 'assigned', 'in_progress', 'inspection_completed'],
   qa_head: ['request_approved', 'assigned', 'in_progress', 'inspection_completed'],
   qa_approver: ['request_approved', 'assigned', 'in_progress', 'inspection_completed'],
   request_approver: ['pending_request_approval', 'pending'],
@@ -96,6 +111,7 @@ function InspectionsContent() {
       pending: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
       draft: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200',
       pending_request_approval: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300',
+      pending_part1_approval: 'bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300',
       request_approved: 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300',
       assigned: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300',
       in_progress: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
@@ -110,6 +126,7 @@ function InspectionsContent() {
     };
     const labels: Record<string, string> = {
       pending_request_approval: 'PENDING FORWARD',
+      pending_part1_approval: 'PENDING PART I APPROVAL',
       request_approved: 'FORWARDED',
       inspection_completed: 'INSPECTION DONE',
       pending_qa_approval: 'PENDING QA',
@@ -127,6 +144,13 @@ function InspectionsContent() {
   const isActionable = (request: InspectionRequest): boolean => {
     const role = permissions.userRole;
     if (!role) return false;
+    if (permissions.isPart1Approver() && request.status === 'pending_part1_approval') return true;
+    if (
+      permissions.canActAsRequestCertifier(request) &&
+      ['pending_request_approval', 'pending'].includes(request.status)
+    ) {
+      return true;
+    }
     if (role === 'administrator') {
       return !['completed', 'closed', 'rejected'].includes(request.status);
     }
@@ -146,6 +170,12 @@ function InspectionsContent() {
       }
       return false;
     }
+    if (role === 'inspector') {
+      return canUserUpdatePart4(request, permissions.userId, role);
+    }
+    if (role === 'ordaqa_inspector') {
+      return canUserUpdatePart5(request, permissions.userId, role);
+    }
     const statuses = ACTIONABLE_STATUSES[role];
     return statuses ? statuses.includes(request.status) : false;
   };
@@ -157,11 +187,23 @@ function InspectionsContent() {
       case 'action': return isActionable(request);
       case 'overdue': return !!request.due_date && new Date(request.due_date) < new Date() && !['completed', 'closed', 'rejected'].includes(request.status);
       case 'pending_forward': return ['pending_request_approval', 'pending'].includes(request.status);
+      case 'pending_part1': return request.status === 'pending_part1_approval';
       case 'needs_assignment': return request.status === 'request_approved';
       case 'assigned': return request.status === 'assigned';
       case 'in_progress': return request.status === 'in_progress';
       case 'drafts': return ['draft', 'pending'].includes(request.status);
       case 'pending': return ['pending', 'pending_request_approval'].includes(request.status);
+      case 'returned_to_designer': return request.status === 'returned_to_designer';
+      case 'pending_part4':
+        return (
+          permissions.userRole === 'inspector' &&
+          canUserUpdatePart4(request, permissions.userId, permissions.userRole)
+        );
+      case 'pending_part5':
+        return (
+          permissions.userRole === 'ordaqa_inspector' &&
+          canUserUpdatePart5(request, permissions.userId, permissions.userRole)
+        );
       default: return false;
     }
   };
@@ -170,11 +212,15 @@ function InspectionsContent() {
     action: 'Needs Action',
     overdue: 'Overdue Inspections',
     pending_forward: 'Pending Forward',
+    pending_part1: 'Pending Part I Approval',
     needs_assignment: 'Needs Assignment',
     assigned: 'Assigned to You',
     in_progress: 'In Progress',
     drafts: 'Drafts',
     pending: 'Pending',
+    returned_to_designer: 'Returned to Designer',
+    pending_part4: 'Part IV Pending',
+    pending_part5: 'Part V Pending',
   };
 
   const filteredRequests = requests
@@ -256,6 +302,7 @@ function InspectionsContent() {
                 <option value="all">All Status</option>
                 <option value="pending">Draft / Pending</option>
                 <option value="pending_request_approval">Pending Forward</option>
+                <option value="pending_part1_approval">Pending Part I Approval</option>
                 <option value="request_approved">Forwarded</option>
                 <option value="assigned">Assigned</option>
                 <option value="in_progress">In Progress</option>
@@ -308,6 +355,41 @@ function InspectionsContent() {
                             </Badge>
                           )}
                         </div>
+                        {(() => {
+                          const st = String(request.status || '');
+                          const forwardedTo =
+                            request.request_approver_name ||
+                            request.nominated_request_approver_name ||
+                            null;
+                          const reachedPart1Queue =
+                            Boolean(forwardedTo) ||
+                            st === 'pending_part1_approval' ||
+                            Boolean(request.part1_approved_by_name) ||
+                            !['pending', 'draft', 'pending_request_approval', 'rejected'].includes(st);
+                          if (!reachedPart1Queue) return null;
+                          const pendingApproval = st === 'pending_part1_approval';
+                          const approvedBy =
+                            [
+                              'pending',
+                              'draft',
+                              'pending_request_approval',
+                              'returned_to_designer',
+                              'rejected',
+                            ].includes(st)
+                              ? null
+                              : request.part1_approved_by_name?.trim() || null;
+                          return (
+                            <p className="text-xs text-muted-foreground mb-2">
+                              Part I forwarded to:{' '}
+                              <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
+                              {' · '}
+                              Approved by:{' '}
+                              <span className="font-medium text-foreground">
+                                {approvedBy || (pendingApproval ? 'Pending' : '—')}
+                              </span>
+                            </p>
+                          );
+                        })()}
                         
                         <p className="text-sm text-muted-foreground mb-3">
                           {request.description || 'No description provided'}
@@ -344,7 +426,19 @@ function InspectionsContent() {
                         </div>
                       </div>
 
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        {(((request.initiator_id != null &&
+                          Number(request.initiator_id) === permissions.userId) ||
+                          permissions.isAdmin()) &&
+                          ['pending', 'draft', 'returned_to_designer'].includes(request.status)) ||
+                          permissions.canEditPart1AsCertifier(request) ? (
+                          <Button variant="default" size="sm" asChild>
+                            <Link href={`/dashboard/inspections/new?edit=${request.id}`}>
+                              <Edit className="mr-1.5 h-3.5 w-3.5" />
+                              Edit Part I
+                            </Link>
+                          </Button>
+                        ) : null}
                         <Button 
                           variant="outline" 
                           size="sm"
