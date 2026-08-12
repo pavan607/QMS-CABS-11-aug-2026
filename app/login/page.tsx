@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, Loader2, Timer, UserX } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff, IdCard, Loader2, Lock, LogIn, Timer, UserX } from 'lucide-react';
 
 export default function LoginPage() {
   return (
@@ -29,6 +29,7 @@ function LoginContent() {
   const [loading, setLoading] = useState(false);
   const [idleMessage, setIdleMessage] = useState(false);
   const [deactivatedMessage, setDeactivatedMessage] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     const reason = searchParams.get('reason');
@@ -131,36 +132,55 @@ function LoginContent() {
 
               <div className="space-y-2">
                 <Label htmlFor="employee_id">Employee ID</Label>
-                <Input
-                  id="employee_id"
-                  type="text"
-                  placeholder="Enter your employee ID"
-                  value={employeeId}
-                  onChange={(e) => setEmployeeId(e.target.value.toUpperCase())}
-                  required
-                  disabled={loading}
-                  className="h-11"
-                  autoComplete="username"
-                />
+                <div className="relative">
+                  <IdCard className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="employee_id"
+                    type="text"
+                    placeholder="Enter your employee ID"
+                    value={employeeId}
+                    onChange={(e) => setEmployeeId(e.target.value.toUpperCase())}
+                    required
+                    disabled={loading}
+                    className="h-11 pl-10"
+                    autoComplete="username"
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  disabled={loading}
-                  className="h-11"
-                  autoComplete="current-password"
-                />
+                <div className="relative">
+                  <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    disabled={loading}
+                    className="h-11 pl-10 pr-10"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    disabled={loading}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
 
               <Button type="submit" className="w-full h-11" disabled={loading}>
-                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {loading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="mr-2 h-4 w-4" />
+                )}
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>

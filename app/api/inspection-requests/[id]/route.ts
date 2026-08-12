@@ -137,6 +137,16 @@ export async function GET(
         nominated_th.name as nominated_team_head_name,
         nominated_th.employee_id as nominated_team_head_employee_id,
         nominated_th.signature_path as nominated_team_head_signature_path,
+        (
+          SELECT string_agg(u_qh.name, ', ' ORDER BY u_qh.name)
+          FROM users u_qh
+          WHERE u_qh.role = 'qa_head' AND COALESCE(u_qh.status, 'active') = 'active'
+        ) as qa_head_names,
+        (
+          SELECT string_agg(u_oh.name, ', ' ORDER BY u_oh.name)
+          FROM users u_oh
+          WHERE u_oh.role = 'ordaqa_head' AND COALESCE(u_oh.status, 'active') = 'active'
+        ) as ordaqa_head_names,
         p.name as project_name,
         p.code as project_code,
         ss.name as subsystem_name,
@@ -530,6 +540,21 @@ export async function PUT(
         const documentDetailsError = validatePart1DocumentDetailsForward(docsResolved);
         if (documentDetailsError) {
           return NextResponse.json({ error: documentDetailsError }, { status: 400 });
+        }
+
+        const soInvolvesDgaqaCheck =
+          bodySoInvolvesDgaqa !== undefined
+            ? parsePart1Bool(bodySoInvolvesDgaqa)
+            : parsePart1Bool(existingRequest.so_involves_dgaqa);
+        const soInvolvesRqaCheck =
+          bodySoInvolvesRqa !== undefined
+            ? parsePart1Bool(bodySoInvolvesRqa)
+            : parsePart1Bool(existingRequest.so_involves_rqa);
+        if (!soInvolvesDgaqaCheck && !soInvolvesRqaCheck) {
+          return NextResponse.json(
+            { error: 'Involvement in this inspection is required — select DGAQA and/or R&QA' },
+            { status: 400 }
+          );
         }
       }
 

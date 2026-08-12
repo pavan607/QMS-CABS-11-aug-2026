@@ -12,7 +12,15 @@ export function sqlInspectorIdsContainsUserId(
   return `COALESCE(${inspectionRequestsAlias}.inspector_ids, '[]')::jsonb @> to_jsonb(${userIdPlaceholder}::int)`;
 }
 
-/** Part I 19(f) No or N/A — Parts II–III skipped; R&QA Inspector fills Part IV. */
+/** Part I 19(f) No (or legacy N/A) — ORDAQA Parts III/V skipped; Part II Team Head still used. */
 export function sqlPart1JointInspectionSkippedCondition(irAlias: string): string {
   return `LOWER(COALESCE(${irAlias}.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')`;
+}
+
+/** Legacy open Part IV: 19(f) No and no nominated Team Head yet. */
+export function sqlLegacyOpenRqaPart4Condition(irAlias: string): string {
+  return `(
+    ${sqlPart1JointInspectionSkippedCondition(irAlias)}
+    AND ${irAlias}.nominated_team_head_id IS NULL
+  )`;
 }

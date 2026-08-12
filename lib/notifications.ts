@@ -13,6 +13,7 @@ export type NotificationType =
   | 'request_approved'
   | 'request_rejected'
   | 'request_closed'
+  | 'request_updated'
   | 'inspection_completed'
   | 'overdue_alert'
   | 'returned_to_designer'
@@ -29,6 +30,7 @@ export type NotificationType =
   | 'part4_team_head_approved'
   | 'part4_forwarded_for_part5'
   | 'part3_completed'
+  | 'ordaqa_delegated_to_rqa'
   | 'part5_pending_ordaqa_approval'
   | 'part5_head_send_back'
   | 'part5_ordaqa_approved'
@@ -961,6 +963,99 @@ export async function notifyPart2InspectorsPart3Completed(
 }
 
 /**
+ * When ORDAQA Head delegates Part III / Part V work to an R&QA Inspector (or QA Rep),
+ * notify all IR stakeholders (initiator, certifier, Team Head, Part II inspectors, assignee, etc.).
+ */
+export async function notifyStakeholdersOrdaqaDelegatedToRqa(params: {
+  requestId: number;
+  requestNumber: string;
+  delegatedToUserId: number;
+  delegatedToName?: string;
+  ordaqaHeadName?: string;
+  excludeUserId?: number;
+  stakeholderIds?: number[];
+}): Promise<void> {
+  const {
+    requestId,
+    requestNumber,
+    delegatedToUserId,
+    delegatedToName,
+    ordaqaHeadName,
+    excludeUserId,
+    stakeholderIds = [],
+  } = params;
+
+  const who = (ordaqaHeadName && String(ordaqaHeadName).trim()) || 'ORDAQA Head';
+  const toName =
+    (delegatedToName && String(delegatedToName).trim()) || 'R&QA Inspector';
+  const exclude = excludeUserId != null ? Number(excludeUserId) : NaN;
+
+  const recipientIds = new Set<number>();
+  const add = (uid: unknown) => {
+    const n = uid != null ? Number(uid) : NaN;
+    if (Number.isFinite(n) && n > 0 && n !== exclude) recipientIds.add(n);
+  };
+
+  for (const id of stakeholderIds) add(id);
+  add(delegatedToUserId);
+
+  // Ensure core IR roles from DB are included even if stakeholder list was incomplete
+  const irRes = await pool.query(
+    `SELECT initiator_id, request_approver_id, nominated_request_approver_id,
+            nominated_team_head_id, qa_approver_id, part1_approved_by,
+            inspector_id, inspector_ids, ordaqa_inspector_id
+     FROM inspection_requests WHERE id = $1`,
+    [requestId]
+  );
+  const row = irRes.rows[0] as
+    | {
+        initiator_id?: number | null;
+        request_approver_id?: number | null;
+        nominated_request_approver_id?: number | null;
+        nominated_team_head_id?: number | null;
+        qa_approver_id?: number | null;
+        part1_approved_by?: number | null;
+        inspector_id?: number | null;
+        inspector_ids?: unknown;
+        ordaqa_inspector_id?: number | null;
+      }
+    | undefined;
+  if (row) {
+    add(row.initiator_id);
+    add(row.request_approver_id);
+    add(row.nominated_request_approver_id);
+    add(row.nominated_team_head_id);
+    add(row.qa_approver_id);
+    add(row.part1_approved_by);
+    add(row.inspector_id);
+    add(row.ordaqa_inspector_id);
+    try {
+      const raw = row.inspector_ids;
+      const arr =
+        typeof raw === 'string'
+          ? JSON.parse(raw || '[]')
+          : Array.isArray(raw)
+            ? raw
+            : [];
+      if (Array.isArray(arr)) arr.forEach((x) => add(x));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (recipientIds.size === 0) return;
+
+  await createBulkNotifications(Array.from(recipientIds), {
+    title: 'ORDAQA delegated to R&QA Inspector',
+    message: `Inspection request ${requestNumber}: ${who} delegated inspection to ${toName} (R&QA). Sections 24–25 will be completed in Part V after Part IV.`,
+    type: 'ordaqa_delegated_to_rqa',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
  * After Part II — Team Head assigns Inspector(s) / QA Rep(s), notify each assigned active `inspector` user.
  */
 export async function notifyInspectorsAssignedPart2(
@@ -1199,8 +1294,8 @@ export async function notifyInspectorsPart4Rejected(
     commentSnippet.length > 200 ? `${commentSnippet.slice(0, 200)}…` : commentSnippet;
 
   await createBulkNotifications(ids, {
-    title: 'Part IV rejected — revise and resubmit',
-    message: `Inspection request ${requestNumber}: ${who} rejected Part IV. Comments: ${snippet}`,
+    title: 'Part IV sent back — revise and resubmit',
+    message: `Inspection request ${requestNumber}: ${who} sent Part IV back for revision. Comments: ${snippet}`,
     type: 'part4_team_head_rejected',
     entityType: 'inspection_request',
     entityId: requestId,

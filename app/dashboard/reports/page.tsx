@@ -15,7 +15,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { formatCalendarDateDisplay, formatDateTimeDisplay } from '@/lib/inspection-display';
 import {
   resolveInspectorNames,
   resolveStartCompleteInspectorName,
@@ -375,7 +375,7 @@ function InspectorNamesCell({ row }: { row: Record<string, unknown> }) {
                 <div>
                   <CardTitle className="text-base text-white">{reportData.name}</CardTitle>
                   <p className="text-xs text-white/70 mt-0.5">
-                    {(() => { try { const d = new Date(reportData.generated_at); return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; } catch { return reportData.generated_at; } })()}
+                    {formatDateTimeDisplay(reportData.generated_at, reportData.generated_at)}
                   </p>
                 </div>
               </div>

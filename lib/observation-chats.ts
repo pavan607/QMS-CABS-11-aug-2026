@@ -205,7 +205,7 @@ export function canEditObservationChat(
   userRole: string,
   part: ObservationPart,
   ir: InspectionRequestScopeRow & {
-    status?: string;
+    status?: string | null;
     part4_data?: unknown;
     nominated_team_head_id?: number | null;
     confirmations?: unknown;
@@ -214,8 +214,9 @@ export function canEditObservationChat(
 ): boolean {
   if (threadClosed) return false;
   if (part !== 'part4') return false;
-  if (userRole === 'administrator') return part4PendingTeamHeadApproval(ir);
-  return canUserApprovePart4(ir, userId, userRole);
+  const irForPart4 = { ...ir, status: ir.status ?? undefined };
+  if (userRole === 'administrator') return part4PendingTeamHeadApproval(irForPart4);
+  return canUserApprovePart4(irForPart4, userId, userRole);
 }
 
 /** Update observation preview + matching Part IV Section 29 remark (Team Head edit). */

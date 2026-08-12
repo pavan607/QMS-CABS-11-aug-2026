@@ -16,8 +16,24 @@ export async function GET(request: NextRequest) {
     const unreadOnly = searchParams.get('unread_only') === 'true';
     const limit = parseInt(searchParams.get('limit') || '50');
 
+    // TIMESTAMP WITHOUT TIME ZONE is stored in the DB session timezone
+    // (often not IST). Re-interpret as that zone so JSON gets a correct UTC instant
+    // and the UI "Xm ago" is not skewed (e.g. ~12.5h for America/Los_Angeles vs IST).
     let sql = `
-      SELECT * FROM notifications
+      SELECT
+        id,
+        user_id,
+        title,
+        message,
+        type,
+        entity_type,
+        entity_id,
+        is_read,
+        sent_via_email,
+        email_sent_at AT TIME ZONE current_setting('TimeZone') AS email_sent_at,
+        read_at AT TIME ZONE current_setting('TimeZone') AS read_at,
+        created_at AT TIME ZONE current_setting('TimeZone') AS created_at
+      FROM notifications
       WHERE user_id = $1
     `;
     const params: any[] = [userId];

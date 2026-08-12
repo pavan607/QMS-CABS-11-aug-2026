@@ -93,6 +93,22 @@ export async function GET(request: NextRequest) {
           ORDER BY CASE WHEN COALESCE(u_p1.status, 'active') = 'active' THEN 0 ELSE 1 END, u_p1.id
           LIMIT 1
         ) as part1_approver_name,
+        qa_approver_user.name as qa_approver_name,
+        nominated_th.name as nominated_team_head_name,
+        ordaqa_inspector_user.name as ordaqa_inspector_name,
+        ordaqa_approver_user.name as ordaqa_approver_name,
+        part3_user.name as part3_completed_by_name,
+        final_qa_user.name as final_qa_approver_name,
+        (
+          SELECT string_agg(u_qh.name, ', ' ORDER BY u_qh.name)
+          FROM users u_qh
+          WHERE u_qh.role = 'qa_head' AND COALESCE(u_qh.status, 'active') = 'active'
+        ) as qa_head_names,
+        (
+          SELECT string_agg(u_oh.name, ', ' ORDER BY u_oh.name)
+          FROM users u_oh
+          WHERE u_oh.role = 'ordaqa_head' AND COALESCE(u_oh.status, 'active') = 'active'
+        ) as ordaqa_head_names,
         p.name as project_name,
         p.code as project_code,
         ss.name as subsystem_name,
@@ -100,7 +116,12 @@ export async function GET(request: NextRequest) {
         l.name as lru_name
         ${hasSrus ? ", sr.name as sru_name, sr.code as sru_code" : ""},
         (SELECT COUNT(*) FROM inspection_checklists WHERE inspection_request_id = ir.id) as checklist_count,
-        (SELECT COUNT(*) FROM attachments WHERE entity_type = 'inspection_request' AND entity_id = ir.id) as attachment_count
+        (SELECT COUNT(*) FROM attachments WHERE entity_type = 'inspection_request' AND entity_id = ir.id) as attachment_count,
+        EXISTS (
+          SELECT 1 FROM inspection_activities a
+          WHERE a.inspection_request_id = ir.id
+            AND a.activity_type IN ('part3_memo_returned', 'part2_reforwarded_to_ordaqa')
+        ) as has_memo_return_activity
       FROM inspection_requests ir
       LEFT JOIN users initiator ON ir.initiator_id = initiator.id
       LEFT JOIN users inspector ON ir.inspector_id = inspector.id
@@ -109,6 +130,12 @@ export async function GET(request: NextRequest) {
       LEFT JOIN users req_approver ON ir.request_approver_id = req_approver.id
       LEFT JOIN users nominated_ra ON ir.nominated_request_approver_id = nominated_ra.id
       LEFT JOIN users part1_approved_by_user ON ir.part1_approved_by = part1_approved_by_user.id
+      LEFT JOIN users qa_approver_user ON ir.qa_approver_id = qa_approver_user.id
+      LEFT JOIN users nominated_th ON ir.nominated_team_head_id = nominated_th.id
+      LEFT JOIN users ordaqa_inspector_user ON ir.ordaqa_inspector_id = ordaqa_inspector_user.id
+      LEFT JOIN users ordaqa_approver_user ON ir.ordaqa_approver_id = ordaqa_approver_user.id
+      LEFT JOIN users part3_user ON ir.part3_completed_by = part3_user.id
+      LEFT JOIN users final_qa_user ON ir.final_qa_approver_id = final_qa_user.id
       LEFT JOIN projects p ON ir.project_id = p.id
       LEFT JOIN subsystems ss ON ir.subsystem_id = ss.id
       LEFT JOIN lrus l ON ir.lru_id = l.id
@@ -347,6 +374,15 @@ export async function POST(request: NextRequest) {
       const documentDetailsError = validatePart1DocumentDetailsForward(document_details);
       if (documentDetailsError) {
         return NextResponse.json({ error: documentDetailsError }, { status: 400 });
+      }
+
+      const soInvolvesDgaqaCheck = parsePart1Bool(bodySoInvolvesDgaqa);
+      const soInvolvesRqaCheck = parsePart1Bool(bodySoInvolvesRqa);
+      if (!soInvolvesDgaqaCheck && !soInvolvesRqaCheck) {
+        return NextResponse.json(
+          { error: 'Involvement in this inspection is required — select DGAQA and/or R&QA' },
+          { status: 400 }
+        );
       }
     }
 

@@ -11,6 +11,7 @@ import {
   convertToCSV,
 } from '@/lib/report-generator';
 import * as XLSX from 'xlsx';
+import { formatDateTimeDisplay } from '@/lib/inspection-display';
 
 // POST generate report
 export async function POST(request: NextRequest) {
@@ -204,7 +205,7 @@ function generateSimplePDF(title: string, data: any, filters: any): string {
   
   // Add title and date
   contentLines.push(title);
-  contentLines.push(`Generated: ${new Date().toLocaleString()}`);
+  contentLines.push(`Generated: ${formatDateTimeDisplay(new Date())}`);
   contentLines.push('');
   
   // Format data for PDF display
@@ -298,7 +299,7 @@ function generateSimplePDF(title: string, data: any, filters: any): string {
             if (item.findings) contentLines.push(`       Findings: ${item.findings}`);
             if (item.corrective_action) contentLines.push(`       Corrective Action: ${item.corrective_action}`);
             if (item.inspector_notes) contentLines.push(`       Notes: ${item.inspector_notes}`);
-            if (item.checked_by_name) contentLines.push(`       Checked By: ${item.checked_by_name} at ${new Date(item.checked_at).toLocaleString()}`);
+            if (item.checked_by_name) contentLines.push(`       Checked By: ${item.checked_by_name} at ${formatDateTimeDisplay(item.checked_at)}`);
           });
         }
       });
@@ -511,7 +512,7 @@ xmlns="http://www.w3.org/TR/REC-html40">
 </head>
 <body>
 <h1>${esc(title)}</h1>
-<p class="sub">Generated: ${new Date().toLocaleString('en-IN')} | Quality Management System — CABS</p>
+<p class="sub">Generated: ${formatDateTimeDisplay(new Date())} | Quality Management System — CABS</p>
 ${body}
 </body>
 </html>`;

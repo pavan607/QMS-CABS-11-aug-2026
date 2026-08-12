@@ -8,7 +8,8 @@ export const metadata: Metadata = {
   title: "Quality Management System",
   description: "Professional Quality Management System",
   icons: {
-    icon: "/logo.png",
+    icon: [{ url: "/logo.png", type: "image/png" }],
+    shortcut: "/logo.png",
     apple: "/logo.png",
   },
 };

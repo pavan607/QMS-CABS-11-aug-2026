@@ -8,13 +8,14 @@ import {
   CheckSquare, TrendingUp, Activity, AlertCircle, Clock, Calendar,
   ArrowRight, Bell, FileText, Users, FolderKanban, Plus, Eye,
   ClipboardCheck, ShieldCheck, Pen, UserCheck, Crown, Shield, UserCog, Building2,
-  BarChart3, MessageSquare,
+  BarChart3, MessageSquare, RotateCcw,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { formatDateTimeDisplay } from '@/lib/inspection-display';
 import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
 import { usePermissions } from '@/lib/hooks/usePermissions';
 import { employeeIsPart1Approver } from '@/lib/part1-approver';
@@ -284,8 +285,34 @@ export default function DashboardPage() {
         {!isPart1Approver && (userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director') && (
           <>
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
-            <StatCard icon={Clock} label="Pending Forward" value={actions.pending_approval || 0} sub={userRole === 'os_director' ? 'Awaiting request approval' : 'Awaiting your review'} color="blue" highlight={!!actions.pending_approval} href="/dashboard/inspections?highlight=pending_forward" />
-            <StatCard icon={UserCheck} label="Needs Assignment" value={actions.needs_assignment || 0} sub="No inspector assigned" color="saffron" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=needs_assignment" />
+            <StatCard
+              icon={Clock}
+              label={userRole === 'qa_head' ? 'Needs Review' : userRole === 'qa_approver' ? 'Assign Inspectors' : 'Pending Forward'}
+              value={actions.pending_approval || 0}
+              sub={
+                userRole === 'os_director'
+                  ? 'Awaiting request approval'
+                  : userRole === 'qa_head'
+                    ? 'Part II / memo returned'
+                    : 'Part II — assign inspector(s)'
+              }
+              color="blue"
+              highlight={!!actions.pending_approval}
+              href="/dashboard/inspections?highlight=pending_forward"
+            />
+            {userRole === 'qa_approver' ? (
+              <StatCard
+                icon={ClipboardCheck}
+                label="Part IV Approval"
+                value={actions.pending_part4_approval || 0}
+                sub="Awaiting your approval"
+                color="saffron"
+                highlight={!!actions.pending_part4_approval}
+                href="/dashboard/inspections?highlight=pending_part4_approval"
+              />
+            ) : (
+              <StatCard icon={UserCheck} label="Needs Assignment" value={actions.needs_assignment || 0} sub="No inspector assigned" color="saffron" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=needs_assignment" />
+            )}
             <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="teal" />
           </>
         )}
@@ -293,15 +320,24 @@ export default function DashboardPage() {
           <>
             <StatCard icon={CheckSquare} label="ORDAQA Inspections" value={total} sub="Forwarded to ORDAQA" color="violet" href="/dashboard/inspections" />
             <StatCard
-              icon={Activity}
-              label="Active at ORDAQA"
-              value={actions.active_ordaqa || 0}
-              sub="Assigned or in progress"
+              icon={Clock}
+              label="Part III Pending"
+              value={actions.pending_approval || 0}
+              sub="New forwards — Section 23"
               color="blue"
-              href="/dashboard/inspections?highlight=in_progress"
+              highlight={!!actions.pending_approval}
+              href="/dashboard/inspections?highlight=pending_part3"
             />
-            <StatCard icon={Shield} label="Part V Pending" value={actions.needs_assignment || 0} sub="Awaiting your approval" color="saffron" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=action" />
-            <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="teal" />
+            <StatCard
+              icon={RotateCcw}
+              label="Re-forwarded"
+              value={actions.pending_reforward || 0}
+              sub="QA Head re-sent after memo return"
+              color="saffron"
+              highlight={!!actions.pending_reforward}
+              href="/dashboard/inspections?highlight=reforwarded"
+            />
+            <StatCard icon={Shield} label="Part V Pending" value={actions.needs_assignment || 0} sub="Awaiting your approval" color="teal" highlight={!!actions.needs_assignment} href="/dashboard/inspections?highlight=pending_part5_approval" />
           </>
         )}
         {!isPart1Approver && userRole === 'request_approver' && (
@@ -373,9 +409,28 @@ export default function DashboardPage() {
                     {isPart1Approver && (actions.pending_part1_approval || actions.pending_approval) > 0 && (
                       <>{actions.pending_part1_approval || actions.pending_approval} pending Part I approval</>
                     )}
-                    {!isPart1Approver && actions.pending_approval > 0 && `${actions.pending_approval} pending approval`}
+                    {!isPart1Approver &&
+                      userRole === 'qa_head' &&
+                      actions.pending_approval > 0 &&
+                      `${actions.pending_approval} need Part II review`}
+                    {!isPart1Approver &&
+                      userRole === 'qa_approver' &&
+                      actions.pending_approval > 0 &&
+                      `${actions.pending_approval} need inspector assignment`}
+                    {!isPart1Approver &&
+                      userRole !== 'qa_head' &&
+                      userRole !== 'qa_approver' &&
+                      actions.pending_approval > 0 &&
+                      `${actions.pending_approval} pending approval`}
                     {!isPart1Approver && actions.pending_approval > 0 && actions.needs_assignment > 0 && ' · '}
-                    {!isPart1Approver && actions.needs_assignment > 0 && `${actions.needs_assignment} need inspector assignment`}
+                    {!isPart1Approver &&
+                      userRole === 'qa_approver' &&
+                      actions.needs_assignment > 0 &&
+                      `${actions.needs_assignment} ready for Approve & Close`}
+                    {!isPart1Approver &&
+                      userRole !== 'qa_approver' &&
+                      actions.needs_assignment > 0 &&
+                      `${actions.needs_assignment} need inspector assignment`}
                     {isPart1Approver && (actions.needs_assignment || 0) > 0 && (
                       <> · {actions.needs_assignment} need inspector assignment</>
                     )}
@@ -386,6 +441,32 @@ export default function DashboardPage() {
                 <Link href={isPart1Approver ? '/dashboard/inspections?highlight=pending_part1' : '/dashboard/inspections?action=review'}>
                   Review Now
                 </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'qa_approver' && (actions.pending_part4_approval || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/20 dark:to-teal-950/20 border-l-4 border-l-emerald-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="bg-emerald-100 dark:bg-emerald-900/40 p-2 rounded-lg shrink-0">
+                  <ClipboardCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">
+                    Action Required — Part IV Approval
+                  </p>
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                    {actions.pending_part4_approval} inspection request
+                    {actions.pending_part4_approval === 1 ? '' : 's'} submitted by R&amp;QA Inspector
+                    {' '}awaiting your Team Head – QA approval of Part IV.
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs shrink-0" asChild>
+                <Link href="/dashboard/inspections?highlight=pending_part4_approval">Review Part IV</Link>
               </Button>
             </div>
           </CardContent>
@@ -466,7 +547,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       )}
-      {userRole === 'ordaqa_head' && (actions.pending_approval > 0 || actions.needs_assignment > 0) && (
+      {userRole === 'ordaqa_head' && actions.pending_approval > 0 && (
         <Card className="border-0 shadow-sm bg-gradient-to-r from-violet-50 to-purple-50 dark:from-violet-950/20 dark:to-purple-950/20 border-l-4 border-l-violet-500">
           <CardContent className="py-4">
             <div className="flex items-center justify-between">
@@ -475,16 +556,68 @@ export default function DashboardPage() {
                   <Shield className="h-4 w-4 text-violet-600 dark:text-violet-400" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">Action Required</p>
+                  <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">
+                    Action Required — Part III
+                  </p>
                   <p className="text-xs text-violet-700 dark:text-violet-400">
-                    {actions.pending_approval > 0 && `${actions.pending_approval} pending Part III`}
-                    {actions.pending_approval > 0 && actions.needs_assignment > 0 && ' · '}
-                    {actions.needs_assignment > 0 && `${actions.needs_assignment} Part V awaiting approval`}
+                    {actions.pending_approval} new Part III (first forward) awaiting Section 23
                   </p>
                 </div>
               </div>
               <Button size="sm" className="bg-violet-600 hover:bg-violet-700 text-white h-8 text-xs" asChild>
-                <Link href="/dashboard/inspections?action=review">Review Now</Link>
+                <Link href="/dashboard/inspections?highlight=pending_part3">Review Part III</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'ordaqa_head' && (actions.needs_assignment || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-indigo-50 to-blue-50 dark:from-indigo-950/20 dark:to-blue-950/20 border-l-4 border-l-indigo-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="bg-indigo-100 dark:bg-indigo-900/40 p-2 rounded-lg shrink-0">
+                  <ClipboardCheck className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-indigo-900 dark:text-indigo-200">
+                    Action Required — Part V Approval
+                  </p>
+                  <p className="text-xs text-indigo-700 dark:text-indigo-400">
+                    {actions.needs_assignment} inspection request
+                    {actions.needs_assignment === 1 ? '' : 's'} with Part V submitted —
+                    awaiting your ORDAQA Head approval.
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs shrink-0" asChild>
+                <Link href="/dashboard/inspections?highlight=pending_part5_approval">Review Part V</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {userRole === 'ordaqa_head' && (actions.pending_reforward || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20 border-l-4 border-l-orange-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="bg-orange-100 dark:bg-orange-900/40 p-2 rounded-lg shrink-0">
+                  <RotateCcw className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-orange-900 dark:text-orange-200">
+                    Action Required — Re-forwarded by QA Head
+                  </p>
+                  <p className="text-xs text-orange-700 dark:text-orange-400">
+                    {actions.pending_reforward} inspection request
+                    {actions.pending_reforward === 1 ? '' : 's'} re-forwarded to ORDAQA Head by QA Head
+                    after memo return. Complete Part III (Section 23) again.
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-orange-600 hover:bg-orange-700 text-white h-8 text-xs shrink-0" asChild>
+                <Link href="/dashboard/inspections?highlight=reforwarded">Review Re-forwards</Link>
               </Button>
             </div>
           </CardContent>
@@ -572,7 +705,7 @@ export default function DashboardPage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium leading-tight">{n.title}</p>
                     <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{(() => { try { const d = new Date(n.created_at); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; } catch { return n.created_at; } })()}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{formatDateTimeDisplay(n.created_at, n.created_at)}</p>
                   </div>
                 </div>
               ))}
@@ -675,10 +808,7 @@ export default function DashboardPage() {
                             ]);
                             const showPart1Route = forwardedStatuses.has(String(r.status || ''));
                             if (!showPart1Route) return null;
-                            const forwardedTo =
-                              r.request_approver_name ||
-                              r.nominated_request_approver_name ||
-                              null;
+                            const forwardedTo = r.part1_approver_name?.trim() || null;
                             const approvedBy =
                               [
                                 'pending_part1_approval',
@@ -696,11 +826,11 @@ export default function DashboardPage() {
                             return (
                               <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground leading-snug max-w-[180px]">
                                 <p>
-                                  <span className="font-medium text-foreground/80">Forwarded to:</span>{' '}
+                                  <span className="font-medium text-foreground/80">Part I forwarded to:</span>{' '}
                                   {forwardedTo || '—'}
                                 </p>
                                 <p>
-                                  <span className="font-medium text-foreground/80">Approved by:</span>{' '}
+                                  <span className="font-medium text-foreground/80">Part I approved by:</span>{' '}
                                   {approvedBy || (String(r.status) === 'pending_part1_approval' ? 'Pending' : '—')}
                                 </p>
                               </div>

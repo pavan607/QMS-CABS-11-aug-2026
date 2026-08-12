@@ -48,7 +48,7 @@ export function formatDateTimeLocalDisplay(iso: string): string {
   let h12 = h24 % 12;
   if (h12 === 0) h12 = 12;
   const hh = String(h12).padStart(2, '0');
-  return `${d}/${mo}/${y} ${hh}:${mi} ${ampm}`;
+  return `${d}-${mo}-${y} ${hh}:${mi} ${ampm}`;
 }
 
 type DateTimeLocalInputProps = {

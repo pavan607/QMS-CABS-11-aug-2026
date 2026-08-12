@@ -7,16 +7,26 @@ import {
   formatTestTypeDisplayWithOther,
   formatReceivedDateTimeDisplay,
   formatCalendarDateDisplay,
+  formatDateTimeDisplay,
   formatSourceLabel,
+  PART1_DRAFT_DOC_TENTATIVE_NOTE,
+  part1DocumentDetailsHasDraft,
   parseYmdLocal,
   formatInspectionStageItemLabel,
   parsePreviousStageCleared,
   ordaqaRepReportDisplay,
   effectiveOrdqaPart5Data,
   resolvePart4TeamHeadSignoff,
-  formatAssignedInspectorsDisplay,
   resolveAssignedInspectorsForDisplay,
+  inspectionSkipsPart2Part3,
+  isForwardedToOrdqa,
 } from '@/lib/inspection-display';
+
+import {
+  resolveInspectorNames,
+  resolveStartCompleteInspectorName,
+  shouldHighlightInspectorName,
+} from '@/lib/report-inspector-display';
 
 interface IR { [key: string]: any; }
 
@@ -43,21 +53,11 @@ export default function PrintInspectionReport() {
   if (!ir) return <div style={{ padding: 40, textAlign: 'center', fontFamily: 'Arial, sans-serif', fontSize: 14 }}>Inspection request not found.</div>;
 
   const fmt = (val: any) => (val === null || val === undefined || val === '') ? '—' : String(val);
+  const part2Submitted = !!(ir.qa_approver_id || ir.nominated_team_head_id || ir.part2_date);
+  const fmtYesNo = (yes: boolean) => (part2Submitted ? (yes ? 'Yes' : 'No') : '—');
   const fmtDate = (val: any) => formatCalendarDateDisplay(val);
   const fmtDateLong = (val: any) => (val ? formatCalendarDateDisplay(val) : 'DD-MM-YYYY');
-  const fmtDateTime = (val: any) => {
-    if (!val) return '—';
-    try {
-      const d = new Date(val);
-      if (isNaN(d.getTime())) return String(val).replace('T', ' ');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const yyyy = d.getFullYear();
-      const hh = String(d.getHours()).padStart(2, '0');
-      const mi = String(d.getMinutes()).padStart(2, '0');
-      return `${dd}-${mm}-${yyyy} ${hh}:${mi}`;
-    } catch { return String(val).replace('T', ' '); }
-  };
+  const fmtDateTime = (val: any) => formatDateTimeDisplay(val);
   const fmtArr = (val: any) => {
     if (!val) return '—';
     if (Array.isArray(val)) return val.length ? val.join(', ') : '—';
@@ -104,6 +104,9 @@ export default function PrintInspectionReport() {
     { ...p5e, delegation_type: p3?.delegation_type, assigned_delegated_to: p3?.assigned_delegated_to },
     ir.ordaqa_inspector_name
   );
+  // Hide Part III when N/A (19(f) No and not forwarded/delegated to ORDAQA).
+  const showPart3 = !inspectionSkipsPart2Part3(ir) || isForwardedToOrdqa(ir);
+  const showPart5 = showPart3 && isForwardedToOrdqa(ir);
 
   const designerRepDesignation = String(ir.initiator_scientist_rank || ir.designer_rep_designation || '').trim();
   const controlNo = ir.request_number ? `CABS/INSP/${ir.request_number} dt ${fmtDate(ir.request_date || ir.created_at)}` : 'CABS/INSP/XXX';
@@ -341,6 +344,11 @@ export default function PrintInspectionReport() {
             )}
           </tbody>
         </table>
+        {part1DocumentDetailsHasDraft(docDetails) && (
+          <p style={{ fontSize: 11, fontStyle: 'italic', margin: '6px 0 10px', fontWeight: 600 }}>
+            {PART1_DRAFT_DOC_TENTATIVE_NOTE}
+          </p>
+        )}
 
         {/* Section 19 - Confirmations */}
         <table>
@@ -429,16 +437,71 @@ export default function PrintInspectionReport() {
         <table>
           <tbody>
             <tr>
-              <td className="sno" rowSpan={8}>22</td>
+              <td className="sno">22</td>
               <td className="section-head" colSpan={2}>Head R&amp;QA Comments</td>
             </tr>
-            <tr><td className="label">Inspection Request to be</td><td className="value">{fmt(p2?.head_rqa_comments || ir.part2_notes)}</td></tr>
-            <tr><td className="label sub-label">Return to Designer</td><td className="value">{p2?.return_to_designer === 'yes' ? 'Yes' : 'No'}</td></tr>
-            <tr><td className="label sub-label">Forward to ORDAQA for Joint Inspection</td><td className="value">{ir.forwarded_to_ordaqa ? 'Yes' : 'No'}</td></tr>
-            <tr><td className="label">Nominated Officer/Staff — Team Head</td><td className="value">{fmt(p2?.nominated_team_head)}</td></tr>
-            <tr><td className="label sub-label">R&amp;QA Rep</td><td className="value">{formatAssignedInspectorsDisplay(ir)}</td></tr>
-            <tr><td className="label sub-label">Third Party Inspection Agency</td><td className="value">{fmt(p2?.third_party_agency)}</td></tr>
+            <tr><td className="sno"></td><td className="label">Inspection Request to be</td><td className="value">{fmt(p2?.head_rqa_comments || ir.part2_notes)}</td></tr>
+            <tr><td className="sno"></td><td className="label sub-label">Return to Designer</td><td className="value">{fmtYesNo(p2?.return_to_designer === 'yes')}</td></tr>
+            <tr><td className="sno"></td><td className="label sub-label">Forward to ORDAQA for Joint Inspection</td><td className="value">{fmtYesNo(!!ir.forwarded_to_ordaqa)}</td></tr>
+            <tr><td className="sno"></td><td className="label">Nominated Officer/Staff — Team Head</td><td className="value">{fmt(p2?.nominated_team_head)}</td></tr>
+            <tr><td className="sno"></td><td className="label sub-label">Team Head – QA Comments</td><td className="value">{fmt(p2?.team_head_comments)}</td></tr>
             <tr>
+              <td className="sno"></td>
+              <td className="label sub-label">R&amp;QA Rep</td>
+              <td className="value">
+                {(() => {
+                  const rows = resolveAssignedInspectorsForDisplay(ir);
+                  const list =
+                    rows.length > 0
+                      ? rows.map((r) => ({ name: r.name, id: r.id }))
+                      : resolveInspectorNames(ir).map((name) => ({ name, id: null as number | null }));
+                  if (list.length === 0) return '—';
+                  const startComplete = resolveStartCompleteInspectorName(ir);
+                  const part4ById =
+                    ir.part4_completed_by != null ? Number(ir.part4_completed_by) : null;
+                  return list.map((insp, index) => {
+                    const highlightedById =
+                      part4ById != null &&
+                      insp.id != null &&
+                      Number(insp.id) === part4ById;
+                    const highlighted =
+                      highlightedById ||
+                      shouldHighlightInspectorName(insp.name, ir, startComplete);
+                    return (
+                      <span key={`${insp.name}-${index}`}>
+                        {index > 0 && ', '}
+                        {highlighted ? (
+                          <span style={{ color: '#155724', fontWeight: 700, background: '#d4edda', padding: '1px 4px', borderRadius: 3 }}>
+                            {insp.name}
+                          </span>
+                        ) : (
+                          insp.name
+                        )}
+                      </span>
+                    );
+                  });
+                })()}
+              </td>
+            </tr>
+            <tr><td className="sno"></td><td className="label sub-label">Third Party Inspection Agency</td><td className="value">{fmt(p2?.third_party_agency)}</td></tr>
+            <tr>
+              <td className="sno"></td>
+              <td className="label sub-label">Outstation Inspection</td>
+              <td className="value">{fmtYesNo(!!p2?.outstation_inspection)}</td>
+            </tr>
+            {!!p2?.outstation_inspection && (
+              <tr>
+                <td className="sno"></td>
+                <td className="label sub-label">Email Sent</td>
+                <td className="value">
+                  {String(p2?.email_sent || '').toLowerCase() === 'yes' ? 'Yes' : String(p2?.email_sent || '').toLowerCase() === 'no' ? 'No' : fmt(p2?.email_sent)}
+                  {p2?.email_sent_by ? ` — Name: ${p2.email_sent_by}` : ''}
+                  {p2?.email_sent_date ? ` — Date: ${p2.email_sent_date}` : ''}
+                </td>
+              </tr>
+            )}
+            <tr>
+              <td className="sno"></td>
               <td className="label">Head R&amp;QA Name/Seal &amp; Signature with Date</td>
               <td className="value">
                 <span>{fmt(ir.qa_approver_name)}{ir.qa_approver_designation ? ` (${ir.qa_approver_designation})` : ''}{ir.part2_date ? ` — ${fmtDateTime(ir.part2_date)}` : ''}</span>
@@ -449,32 +512,25 @@ export default function PrintInspectionReport() {
             </tr>
           </tbody>
         </table>
-        {p2?.outstation_inspection && (
-          <table>
-            <tbody>
-              <tr>
-                <td className="sno"></td>
-                <td className="label">In case of Outstation Inspection — Email Sent</td>
-                <td className="value">{p2?.email_sent ? 'Yes' : 'No'}{p2?.email_sent_by ? ` — Name: ${p2.email_sent_by}` : ''}{p2?.email_sent_date ? ` — Date: ${p2.email_sent_date}` : ''}</td>
-              </tr>
-            </tbody>
-          </table>
-        )}
 
         {/* ==================== PART III ==================== */}
-        <div className="part-title">Part –III ORDAQA (CABS Cell) Office Use</div>
-        <table>
-          <tbody>
-            <tr>
-              <td className="sno" rowSpan={5}>23</td>
-              <td className="section-head" colSpan={2}>ORDAQA Comments</td>
-            </tr>
-            <tr><td className="label">Received Date &amp; Time</td><td className="value">{formatReceivedDateTimeDisplay(p3?.received_date_time)}</td></tr>
-            <tr><td className="label">Memo to be Returned</td><td className="value">{fmt(p3?.memo_returned)}</td></tr>
-            <tr><td className="label">{p3?.delegation_type === 'assigned' ? 'Assigned to' : p3?.delegation_type === 'delegated' ? 'Delegated to' : 'Assigned / Delegated to'}</td><td className="value">{fmt(p3?.assigned_delegated_to)}</td></tr>
-            <tr><td className="label">Name &amp; Sign of Oi/c ORDAQA CABS Cell</td><td className="value">{fmt(p3?.oic_ordaqa_name || ir.part3_completed_by_name)}</td></tr>
-          </tbody>
-        </table>
+        {showPart3 && (
+          <>
+            <div className="part-title">Part –III ORDAQA (CABS Cell) Office Use</div>
+            <table>
+              <tbody>
+                <tr>
+                  <td className="sno" rowSpan={5}>23</td>
+                  <td className="section-head" colSpan={2}>ORDAQA Comments</td>
+                </tr>
+                <tr><td className="label">Received Date &amp; Time</td><td className="value">{formatReceivedDateTimeDisplay(p3?.received_date_time)}</td></tr>
+                <tr><td className="label">Memo to be Returned</td><td className="value">{fmt(p3?.memo_returned)}</td></tr>
+                <tr><td className="label">{p3?.delegation_type === 'assigned' ? 'Assigned to' : p3?.delegation_type === 'delegated' ? 'Delegated to' : 'Assigned / Delegated to'}</td><td className="value">{fmt(ir.ordaqa_inspector_name || p3?.assigned_delegated_to)}</td></tr>
+                <tr><td className="label">Name &amp; Sign of Oi/c ORDAQA CABS Cell</td><td className="value">{fmt(p3?.oic_ordaqa_name || ir.part3_completed_by_name)}</td></tr>
+              </tbody>
+            </table>
+          </>
+        )}
 
         </div>
         <div className="page-footer">
@@ -641,7 +697,7 @@ export default function PrintInspectionReport() {
           </tbody>
         </table>
 
-        {ir.forwarded_to_ordaqa && (
+        {showPart5 && (
           <>
             <div className="part-title">Part –V ORDAQA (Sections 24–25)</div>
             <table>

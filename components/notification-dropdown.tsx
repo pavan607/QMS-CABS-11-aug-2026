@@ -51,6 +51,7 @@ const TYPE_CONFIG: Record<string, { icon: typeof Info; color: string; bg: string
   part4_team_head_approved:   { icon: CheckCircle2, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
   part4_forwarded_for_part5:  { icon: FileText, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-950/40' },
   part3_completed:            { icon: FileText, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-950/40' },
+  ordaqa_delegated_to_rqa:    { icon: FileText, color: 'text-indigo-600', bg: 'bg-indigo-50 dark:bg-indigo-950/40' },
   part5_pending_ordaqa_approval: { icon: Clock, color: 'text-orange-600', bg: 'bg-orange-50 dark:bg-orange-950/40' },
   part5_head_send_back:        { icon: RotateCcw, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-950/40' },
   part5_ordaqa_approved:       { icon: CheckCircle2, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
@@ -61,10 +62,11 @@ const TYPE_CONFIG: Record<string, { icon: typeof Info; color: string; bg: string
 function fmtTimeAgo(dateStr: string): string {
   try {
     const d = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const mins = Math.floor(diffMs / 60000);
-    if (mins < 1) return 'Just now';
+    if (Number.isNaN(d.getTime())) return dateStr;
+    const diffMs = Date.now() - d.getTime();
+    // Clock skew / future timestamps
+    if (diffMs < 60_000) return 'Just now';
+    const mins = Math.floor(diffMs / 60_000);
     if (mins < 60) return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
     if (hrs < 24) return `${hrs}h ago`;
@@ -73,7 +75,9 @@ function fmtTimeAgo(dateStr: string): string {
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     return `${dd}-${mm}-${d.getFullYear()}`;
-  } catch { return dateStr; }
+  } catch {
+    return dateStr;
+  }
 }
 
 export function NotificationDropdown() {

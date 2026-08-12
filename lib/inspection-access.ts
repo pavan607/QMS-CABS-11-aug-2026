@@ -2,7 +2,7 @@ import { query } from '@/lib/db';
 import { normalizeEmployeeId } from '@/lib/employee-id';
 import { collectInspectorIds, parseInspectorIds } from '@/lib/inspector-ids';
 import {
-  inspectionSkipsPart2Part3,
+  inspectionUsesLegacyOpenRqaPart4,
   isForwardedToOrdqa,
   QA_APPROVER_SKIP_PATH_STATUSES,
 } from '@/lib/inspection-display';
@@ -10,6 +10,7 @@ import { isEligibleRqaTeamHead, R_QA_DEPARTMENT, TEAM_HEAD_DESIGNATION } from '@
 import {
   sqlInspectorIdsContainsUserId,
   sqlPart1JointInspectionSkippedCondition,
+  sqlLegacyOpenRqaPart4Condition,
 } from '@/lib/inspection-scope-sql';
 import {
   PART1_APPROVER_EMPLOYEE_ID,
@@ -102,14 +103,60 @@ export type InspectionRequestScopeRow = {
   final_qa_approver_id?: number | null;
   nominated_request_approver_id?: number | null;
   request_approver_id?: number | null;
+  part3_data?: unknown;
+  part3_completed_by?: number | null;
+  part4_data?: unknown;
 };
 
 /** SQL: IR was forwarded to ORDAQA in Part II (boolean may be stored loosely). */
 export function sqlOrdaqaForwardedCondition(irAlias: string): string {
   return `(
     ${irAlias}.forwarded_to_ordaqa IS TRUE
-    OR ${irAlias}.forwarded_to_ordaqa::text IN ('true', '1')
+    OR ${irAlias}.forwarded_to_ordaqa::text IN ('true', '1', 't')
   )`;
+}
+
+/** SQL: ORDAQA Head may see currently forwarded IRs and IRs they already actioned in Part III. */
+export function sqlOrdaqaHeadVisibleCondition(irAlias: string): string {
+  return `(
+    ${sqlOrdaqaForwardedCondition(irAlias)}
+    OR ${irAlias}.part3_completed_by IS NOT NULL
+    OR LOWER(COALESCE(${irAlias}.part3_data::jsonb ->> 'memo_returned', '')) = 'yes'
+    OR COALESCE(${irAlias}.part3_data::jsonb ->> 'section23_complete', '') IN ('true', 't', '1', 'yes')
+  )`;
+}
+
+function parsePart3ScopeData(part3: unknown): Record<string, unknown> {
+  if (!part3) return {};
+  if (typeof part3 === 'object' && !Array.isArray(part3)) return part3 as Record<string, unknown>;
+  if (typeof part3 === 'string') {
+    try {
+      const parsed = JSON.parse(part3);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/**
+ * ORDAQA Head visibility: currently forwarded, or Part III already completed / memo returned
+ * (so Save & Return to QA Head can refresh without 403 after clearing forwarded_to_ordaqa).
+ */
+export function irVisibleToOrdaqaHead(ir: {
+  forwarded_to_ordaqa?: unknown;
+  part3_data?: unknown;
+  part3_completed_by?: number | null;
+}): boolean {
+  if (isForwardedToOrdqa(ir)) return true;
+  if (ir.part3_completed_by != null && Number(ir.part3_completed_by) > 0) return true;
+  const p3 = parsePart3ScopeData(ir.part3_data);
+  if (String(p3.memo_returned ?? '').trim().toLowerCase() === 'yes') return true;
+  const s23 = String(p3.section23_complete ?? '').trim().toLowerCase();
+  return s23 === 'true' || s23 === 't' || s23 === '1' || s23 === 'yes';
 }
 
 /** IRs not yet Part I–approved — hidden from QA Head. Returned-to-designer stays visible (QA Head may have returned it). */
@@ -217,7 +264,7 @@ export async function userOverseesInspectionViaReportingLine(
   const relatedIds = [
     ir.initiator_id != null ? Number(ir.initiator_id) : null,
     ir.nominated_request_approver_id != null ? Number(ir.nominated_request_approver_id) : null,
-  ].filter((id): id is number => Number.isFinite(id) && id > 0 && id !== userId);
+  ].filter((id): id is number => id != null && Number.isFinite(id) && id > 0 && id !== userId);
 
   if (relatedIds.length === 0) return false;
 
@@ -262,7 +309,7 @@ export function sqlInspectionScopeCondition(
         ${irAlias}.nominated_team_head_id = ${userIdPlaceholder}
         OR ${irAlias}.final_qa_approver_id = ${userIdPlaceholder}
         OR (
-          ${sqlPart1JointInspectionSkippedCondition(irAlias)}
+          ${sqlLegacyOpenRqaPart4Condition(irAlias)}
           AND ${irAlias}.status IN (${skipStatuses})
           AND EXISTS (
             SELECT 1 FROM users u
@@ -281,7 +328,7 @@ export function sqlInspectionScopeCondition(
         OR ${irAlias}.inspector_id = ${userIdPlaceholder}
         OR ${sqlInspectorIdsContainsUserId(irAlias, userIdPlaceholder)}
         OR (
-          ${sqlPart1JointInspectionSkippedCondition(irAlias)}
+          ${sqlLegacyOpenRqaPart4Condition(irAlias)}
           AND ${irAlias}.status IN ('request_approved', 'assigned', 'in_progress', 'inspection_completed', 'completed')
         )
       )`;
@@ -294,7 +341,7 @@ export function sqlInspectionScopeCondition(
     case 'qa_head':
       return sqlQaHeadInspectionVisibleCondition(irAlias);
     case 'ordaqa_head':
-      return sqlOrdaqaForwardedCondition(irAlias);
+      return sqlOrdaqaHeadVisibleCondition(irAlias);
     default:
       return null;
   }
@@ -335,7 +382,7 @@ export async function userCanAccessInspectionRequest(
   }
 
   if (role === 'qa_head') return irVisibleToQaHead(ir);
-  if (role === 'ordaqa_head') return isForwardedToOrdqa(ir);
+  if (role === 'ordaqa_head') return irVisibleToOrdaqaHead(ir);
   if (role === 'initiator') {
     if (ir.initiator_id != null && Number(ir.initiator_id) === userId) return true;
     if (
@@ -352,7 +399,7 @@ export async function userCanAccessInspectionRequest(
       return true;
     }
     if (
-      inspectionSkipsPart2Part3(ir) &&
+      inspectionUsesLegacyOpenRqaPart4(ir) &&
       (QA_APPROVER_SKIP_PATH_STATUSES as readonly string[]).includes(String(ir.status ?? ''))
     ) {
       if (await isEligibleRqaTeamHead(userId)) return true;
@@ -362,7 +409,7 @@ export async function userCanAccessInspectionRequest(
   if (role === 'inspector') {
     if (userIsAssignedInspector(ir, userId)) return true;
     if (
-      inspectionSkipsPart2Part3(ir) &&
+      inspectionUsesLegacyOpenRqaPart4(ir) &&
       ['request_approved', 'assigned', 'in_progress', 'inspection_completed', 'completed'].includes(
         String(ir.status ?? '')
       )

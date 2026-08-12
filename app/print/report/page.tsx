@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { formatCalendarDateDisplay, formatDateTimeDisplay } from '@/lib/inspection-display';
 import {
   resolveInspectorNames,
   resolveStartCompleteInspectorName,
@@ -65,12 +65,7 @@ function fmtDate(val: any): string {
 }
 
 function fmtDateTime(val: any): string {
-  if (!val) return '—';
-  try {
-    const d = new Date(val);
-    if (isNaN(d.getTime())) return String(val);
-    return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  } catch { return String(val); }
+  return formatDateTimeDisplay(val);
 }
 
 function fmtStatus(s: string): string {

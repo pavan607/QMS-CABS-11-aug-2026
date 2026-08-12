@@ -27,6 +27,9 @@ import {
   PART1_VENUE_OPTIONS,
   SOURCE_OPTIONS,
   normalizeSourceValue,
+  filterInspectionTypeGroupsBySource,
+  collectInspectionStageNamesFromGroups,
+  part1DocDetailFieldsDisabled,
   formatPart1Venue,
   parsePart1Venue,
   validatePart1InspectionAdvanceNotice,
@@ -65,7 +68,12 @@ interface ProjectReferredDoc {
   file_size?: number | null;
 }
 interface SRU { id: number; lru_id: number; name: string; code: string; part_number: string; serial_numbers?: string; }
-interface InspectionTypeGroup { id: number; name: string; items: { id: number; name: string; code: string }[]; }
+interface InspectionTypeGroup {
+  id: number;
+  name: string;
+  applicable_sources?: string[] | null;
+  items: { id: number; name: string; code: string }[];
+}
 interface Approver {
   id: number;
   name: string;
@@ -117,14 +125,22 @@ function docRowStarted(d: { approved?: string; doc_no?: string; amd_no?: string;
   return false;
 }
 
-function YesNoSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function YesNoSelect({
+  value,
+  onChange,
+  allowNa = true,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  allowNa?: boolean;
+}) {
   return (
     <Select value={value || undefined} onValueChange={onChange}>
       <SelectTrigger className="w-[120px]"><SelectValue placeholder="Select" /></SelectTrigger>
       <SelectContent>
         <SelectItem value="yes">Yes</SelectItem>
         <SelectItem value="no">No</SelectItem>
-        <SelectItem value="na">N/A</SelectItem>
+        {allowNa ? <SelectItem value="na">N/A</SelectItem> : null}
       </SelectContent>
     </Select>
   );
@@ -387,7 +403,11 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
       previous_observations_status: String(conf?.previous_observations_status ?? ''),
       cocs_available: String(conf?.cocs_available ?? ''),
       instruments_available: String(conf?.instruments_available ?? ''),
-      joint_inspection_request: String(conf?.joint_inspection_request ?? ''),
+      // 19(f) is Yes/No only — clear legacy N/A so the user must reselect
+      joint_inspection_request: (() => {
+        const v = String(conf?.joint_inspection_request ?? '').toLowerCase();
+        return v === 'na' || v === 'n/a' ? '' : String(conf?.joint_inspection_request ?? '');
+      })(),
     },
     design_coordinator_name: String(ir.design_coordinator_name || ''),
     certified_by_name: String(ir.certified_by_name || ''),
@@ -896,6 +916,35 @@ function NewInspectionRequestForm() {
 
   const [form, setForm] = useState(createEmptyPart1Form);
 
+  const stagesForSource = filterInspectionTypeGroupsBySource(
+    inspectionTypeGroups,
+    form.source
+  );
+
+  // When Source changes, keep only stage selections valid for that Source
+  useEffect(() => {
+    if (inspectionTypeGroups.length === 0) return;
+    const allowed = collectInspectionStageNamesFromGroups(
+      filterInspectionTypeGroupsBySource(inspectionTypeGroups, form.source)
+    );
+    setForm((prev) => {
+      const nextPrev = prev.previous_stage_cleared.filter((s) => allowed.has(s));
+      const nextOffered = prev.inspection_stage.filter((s) => allowed.has(s));
+      if (
+        nextPrev.length === prev.previous_stage_cleared.length &&
+        nextOffered.length === prev.inspection_stage.length
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        previous_stage_cleared: nextPrev,
+        inspection_stage: nextOffered,
+        inspection_type: nextOffered.join(', '),
+      };
+    });
+  }, [form.source, inspectionTypeGroups]);
+
   useEffect(() => {
     fetchProjects();
     fetchInspectionTypes();
@@ -1176,7 +1225,10 @@ function NewInspectionRequestForm() {
             previous_observations_status: String(conf?.previous_observations_status ?? ''),
             cocs_available: String(conf?.cocs_available ?? ''),
             instruments_available: String(conf?.instruments_available ?? ''),
-            joint_inspection_request: String(conf?.joint_inspection_request ?? ''),
+            joint_inspection_request: (() => {
+              const v = String(conf?.joint_inspection_request ?? '').toLowerCase();
+              return v === 'na' || v === 'n/a' ? '' : String(conf?.joint_inspection_request ?? '');
+            })(),
           },
           designer_rep_name: ir.designer_rep_name || '',
           designer_rep_designation: designerRepDesignation,
@@ -1709,7 +1761,25 @@ function NewInspectionRequestForm() {
   };
 
   const handleDocApprovedChange = (docKey: string, value: string) => {
-    updateDocDetail(docKey, 'approved', value);
+    setForm((prev) => {
+      const current = prev.document_details[docKey] || {
+        approved: '',
+        doc_no: '',
+        amd_no: '',
+        rev_no: '',
+        date: '',
+      };
+      const nextRow = part1DocDetailFieldsDisabled(value)
+        ? { approved: value, doc_no: '', amd_no: '', rev_no: '', date: '' }
+        : { ...current, approved: value };
+      return {
+        ...prev,
+        document_details: {
+          ...prev.document_details,
+          [docKey]: nextRow,
+        },
+      };
+    });
     if (value === 'draft') {
       setDraftNoticeDocLabel(docRowLabel(docKey));
       setDraftNoticeOpen(true);
@@ -1784,6 +1854,9 @@ function NewInspectionRequestForm() {
     if (!supplyOrderFile && !hasExistingSupplyOrder) {
       errors.so_attachment = '4. Supply Order attachment is required';
     }
+    if (!form.so_involves_dgaqa && !form.so_involves_rqa) {
+      errors.so_involvement = 'Involvement in this inspection is required — select DGAQA and/or R&QA';
+    }
     if (!form.source) errors.source = '5. Source is required';
     if (!form.oem_name.trim()) errors.oem_name = 'OEM Name is required';
     if (!form.lru_id) errors.lru_id = '6. LRU Nomenclature is required';
@@ -1847,7 +1920,7 @@ function NewInspectionRequestForm() {
       if (!tsDoc?.approved) {
         errors.document_details = '18. TS — Approval status is required';
         errors[DOC_ROW_HIGHLIGHT_KEY] = 'ts';
-      } else if (tsDoc.approved !== 'na') {
+      } else if (!part1DocDetailFieldsDisabled(tsDoc.approved)) {
         if (!tsDoc?.doc_no?.trim()) {
           errors.document_details = '18. TS — Controlled document number is required';
           errors[DOC_ROW_HIGHLIGHT_KEY] = 'ts';
@@ -1873,16 +1946,7 @@ function NewInspectionRequestForm() {
           errors[DOC_ROW_HIGHLIGHT_KEY] = key;
           break;
         }
-        if (d.approved === 'na') continue;
-        if (d.approved === 'no') {
-          if (key === 'pc_ta_other' && !d?.doc_no?.trim()) {
-            errors.document_details =
-              '18. PC/TA/Other Doc — Controlled document number is required when No is selected';
-            errors[DOC_ROW_HIGHLIGHT_KEY] = key;
-            break;
-          }
-          continue;
-        }
+        if (part1DocDetailFieldsDisabled(d.approved)) continue;
         if (!d?.doc_no?.trim()) {
           errors.document_details = `18. ${label} — Controlled document number is required`;
           errors[DOC_ROW_HIGHLIGHT_KEY] = key;
@@ -2407,14 +2471,26 @@ function NewInspectionRequestForm() {
 
             <div className="space-y-1.5">
               <Label className="text-sm font-normal text-muted-foreground">
-                Involvement in this inspection
+                Involvement in this inspection <span className="text-destructive">*</span>
               </Label>
-              <div className="flex flex-wrap gap-4">
+              <div
+                className={`flex flex-wrap gap-4 rounded-md p-1 ${
+                  fieldErrors.so_involvement ? 'ring-1 ring-red-500 border border-red-500' : ''
+                }`}
+              >
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={form.so_involves_dgaqa}
-                    onChange={(e) => setForm({ ...form, so_involves_dgaqa: e.target.checked })}
+                    onChange={(e) => {
+                      setForm({ ...form, so_involves_dgaqa: e.target.checked });
+                      setFieldErrors((prev) => {
+                        if (!prev.so_involvement) return prev;
+                        const next = { ...prev };
+                        delete next.so_involvement;
+                        return next;
+                      });
+                    }}
                     className="h-4 w-4 rounded border-gray-300"
                   />
                   <span className="text-sm">DGAQA</span>
@@ -2423,14 +2499,23 @@ function NewInspectionRequestForm() {
                   <input
                     type="checkbox"
                     checked={form.so_involves_rqa}
-                    onChange={(e) => setForm({ ...form, so_involves_rqa: e.target.checked })}
+                    onChange={(e) => {
+                      setForm({ ...form, so_involves_rqa: e.target.checked });
+                      setFieldErrors((prev) => {
+                        if (!prev.so_involvement) return prev;
+                        const next = { ...prev };
+                        delete next.so_involvement;
+                        return next;
+                      });
+                    }}
                     className="h-4 w-4 rounded border-gray-300"
                   />
                   <span className="text-sm">R&QA</span>
                 </label>
               </div>
+              {errMsg('so_involvement')}
               <p className="text-xs text-muted-foreground">
-                Note: Checked = Yes, unchecked = No (for DGAQA and for R&amp;QA).
+                Checked = Yes, unchecked = No (for DGAQA and for R&amp;QA).
               </p>
             </div>
 
@@ -2709,7 +2794,7 @@ function NewInspectionRequestForm() {
                   <div className="grid gap-2">
                     <Label className="text-sm font-normal text-muted-foreground">Inspection type(s) *</Label>
                     <InspectionStageSelect
-                      groups={inspectionTypeGroups}
+                      groups={stagesForSource}
                       selected={form.previous_stage_cleared}
                       onChange={(selected) => {
                         setForm(prev => ({ ...prev, previous_stage_cleared: selected }));
@@ -2793,7 +2878,7 @@ function NewInspectionRequestForm() {
                 <Label>14. Inspection Stage Offered Now *</Label>
                 {errMsg('inspection_stage')}
                 <InspectionStageSelect
-                  groups={inspectionTypeGroups}
+                  groups={stagesForSource}
                   selected={form.inspection_stage}
                   onChange={(selected) => setForm(prev => ({
                     ...prev,
@@ -2958,11 +3043,14 @@ function NewInspectionRequestForm() {
                   </tr>
                 </thead>
                 <tbody>
-                  {DOC_TYPES.map(doc => (
+                  {DOC_TYPES.map(doc => {
+                    const approved = form.document_details[doc.key]?.approved || '';
+                    const fieldsDisabled = part1DocDetailFieldsDisabled(approved);
+                    return (
                     <tr key={doc.key} className={`border-b last:border-0 ${doc.key === 'ts' ? 'bg-blue-50/50 dark:bg-blue-950/10' : ''}`}>
                       <td className="py-2 pr-4 font-medium whitespace-nowrap">{doc.label}{doc.key === 'ts' ? ' *' : ''}</td>
                       <td className="py-2 px-2">
-                        <Select value={form.document_details[doc.key]?.approved || ''} onValueChange={(v) => handleDocApprovedChange(doc.key, v)}>
+                        <Select value={approved} onValueChange={(v) => handleDocApprovedChange(doc.key, v)}>
                           <SelectTrigger className={cn('w-[100px] h-8', docRowErrClass(doc.key))}><SelectValue placeholder="--" /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="yes">Yes</SelectItem>
@@ -2973,13 +3061,36 @@ function NewInspectionRequestForm() {
                         </Select>
                       </td>
                       <td className="py-2 px-2">
-                        <Input className={cn('h-8', docRowErrClass(doc.key))} value={form.document_details[doc.key]?.doc_no || ''} onChange={(e) => updateDocDetail(doc.key, 'doc_no', e.target.value)} />
+                        <Input
+                          className={cn('h-8', docRowErrClass(doc.key))}
+                          value={form.document_details[doc.key]?.doc_no || ''}
+                          onChange={(e) => updateDocDetail(doc.key, 'doc_no', e.target.value)}
+                          disabled={fieldsDisabled}
+                        />
                       </td>
                       <td className="py-2 px-2">
-                        <Input className={cn('h-8 w-16', docRowErrClass(doc.key))} type="number" min={0} max={5} value={form.document_details[doc.key]?.amd_no || ''} onChange={(e) => updateDocDetail(doc.key, 'amd_no', e.target.value)} placeholder="0-5" />
+                        <Input
+                          className={cn('h-8 w-16', docRowErrClass(doc.key))}
+                          type="number"
+                          min={0}
+                          max={5}
+                          value={form.document_details[doc.key]?.amd_no || ''}
+                          onChange={(e) => updateDocDetail(doc.key, 'amd_no', e.target.value)}
+                          placeholder="0-5"
+                          disabled={fieldsDisabled}
+                        />
                       </td>
                       <td className="py-2 px-2">
-                        <Input className={cn('h-8 w-16', docRowErrClass(doc.key))} type="number" min={0} max={5} value={form.document_details[doc.key]?.rev_no || ''} onChange={(e) => updateDocDetail(doc.key, 'rev_no', e.target.value)} placeholder="0-5" />
+                        <Input
+                          className={cn('h-8 w-16', docRowErrClass(doc.key))}
+                          type="number"
+                          min={0}
+                          max={5}
+                          value={form.document_details[doc.key]?.rev_no || ''}
+                          onChange={(e) => updateDocDetail(doc.key, 'rev_no', e.target.value)}
+                          placeholder="0-5"
+                          disabled={fieldsDisabled}
+                        />
                       </td>
                       <td className="py-2 pl-2 min-w-[9rem]">
                         <CalendarDateInput
@@ -2987,10 +3098,12 @@ function NewInspectionRequestForm() {
                           inputClassName={docRowErrClass(doc.key)}
                           value={form.document_details[doc.key]?.date || ''}
                           onChange={(v) => updateDocDetail(doc.key, 'date', v)}
+                          disabled={fieldsDisabled}
                         />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -3032,8 +3145,14 @@ function NewInspectionRequestForm() {
                     </Select>
                   ) : (
                     <YesNoSelect
-                      value={(form.confirmations as any)[item.key] || ''}
+                      value={
+                        item.key === 'joint_inspection_request' &&
+                        ['na', 'n/a'].includes(String((form.confirmations as any)[item.key] || '').toLowerCase())
+                          ? ''
+                          : (form.confirmations as any)[item.key] || ''
+                      }
                       onChange={(v) => updateConfirmation(item.key, v)}
+                      allowNa={item.key !== 'joint_inspection_request'}
                     />
                   )}
                 </div>
@@ -3140,7 +3259,7 @@ function NewInspectionRequestForm() {
           <DialogHeader>
             <DialogTitle>{draftNoticeDocLabel} document is draft</DialogTitle>
             <DialogDescription>
-              Since the {draftNoticeDocLabel} doc is draft, the inspection is tentative only.
+              Since the Doc (as applicable) doc is draft, the inspection is tentative only.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

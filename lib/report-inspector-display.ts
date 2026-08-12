@@ -57,6 +57,12 @@ export function shouldHighlightInspectorName(
   const trimmed = name.trim();
   if (!trimmed) return false;
 
+  // Primary: inspector who saved / completed Part IV.
+  const part4By = row.part4_completed_by_name?.trim();
+  if (part4By && normalizeName(trimmed) === normalizeName(part4By)) {
+    return true;
+  }
+
   if (startCompleteInspector) {
     return normalizeName(trimmed) === normalizeName(startCompleteInspector);
   }

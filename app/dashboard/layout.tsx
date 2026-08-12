@@ -108,7 +108,7 @@ export default function DashboardLayout({
     { icon: UserCircle, label: 'Profile', href: '/dashboard/profile', requiresPermission: null },
     { icon: FolderKanban, label: 'Projects', href: '/dashboard/projects', requiresPermission: 'admin_only' },
     { icon: ClipboardList, label: 'Inspection Types', href: '/dashboard/inspection-types', requiresPermission: 'admin_only' },
-    { icon: Users, label: 'Users', href: '/dashboard/users', requiresPermission: 'user:read' },
+    { icon: Users, label: 'Users', href: '/dashboard/users', requiresPermission: 'admin_only' },
     { icon: Settings, label: 'Settings', href: '/dashboard/settings', requiresPermission: 'admin_only' },
   ];
 

@@ -214,6 +214,7 @@ export async function GET(request: NextRequest) {
              OR inspector_ids::jsonb @> to_jsonb($1::int)
              OR (
                LOWER(COALESCE(confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               AND nominated_team_head_id IS NULL
                AND inspector_id IS NULL
                AND (inspector_ids IS NULL OR inspector_ids::jsonb = '[]'::jsonb)
              )
@@ -274,9 +275,20 @@ export async function GET(request: NextRequest) {
         needs_assignment: parseInt(needsAssignmentRes.rows[0]?.count || 0),
       };
     } else if (userRole === 'qa_head') {
+      // Part II not yet completed (no Team Head) OR ORDAQA memo returned for Part II re-review
       const pendingPart2Res = await query(
         `SELECT COUNT(*) as count FROM inspection_requests
-         WHERE status = 'request_approved' AND nominated_team_head_id IS NULL`,
+         WHERE (
+           (status = 'request_approved' AND nominated_team_head_id IS NULL)
+           OR (
+             LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) = 'yes'
+             AND COALESCE(forwarded_to_ordaqa, false) = false
+             AND status NOT IN (
+               'draft', 'pending', 'pending_request_approval', 'pending_part1_approval',
+               'returned_to_designer', 'completed', 'closed', 'rejected'
+             )
+           )
+         )`,
         []
       );
       const pendingFinalRes = await query(
@@ -291,8 +303,29 @@ export async function GET(request: NextRequest) {
     } else if (userRole === 'qa_approver') {
       const pendingAssignRes = await query(
         `SELECT COUNT(*) as count FROM inspection_requests
-         WHERE nominated_team_head_id = $1 AND inspector_id IS NULL AND status = 'request_approved'
-           AND NOT (LOWER(COALESCE(confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a'))`,
+         WHERE nominated_team_head_id = $1 AND inspector_id IS NULL AND status = 'request_approved'`,
+        [userId]
+      );
+      // Part IV submitted by R&QA Inspector — awaiting this Team Head – QA approve/reject
+      const pendingPart4ApprovalRes = await query(
+        `SELECT COUNT(*) as count FROM inspection_requests ir
+         WHERE ir.status IN ('assigned', 'in_progress')
+           AND COALESCE(ir.part4_data::jsonb ->> 'team_head_approval_status', '') = 'pending'
+           AND (
+             ir.nominated_team_head_id = $1
+             OR (
+               ir.nominated_team_head_id IS NULL
+               AND LOWER(COALESCE(ir.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               AND EXISTS (
+                 SELECT 1 FROM users u
+                 WHERE u.id = $1
+                   AND u.role = 'qa_approver'
+                   AND COALESCE(u.status, 'active') = 'active'
+                   AND TRIM(COALESCE(u.department, '')) = 'R&QA'
+                   AND TRIM(COALESCE(u.designation, '')) = 'TH'
+               )
+             )
+           )`,
         [userId]
       );
       const pendingFinalRes = await query(
@@ -301,7 +334,8 @@ export async function GET(request: NextRequest) {
            AND (
              ir.nominated_team_head_id = $1
              OR (
-               LOWER(COALESCE(ir.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               ir.nominated_team_head_id IS NULL
+               AND LOWER(COALESCE(ir.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
                AND EXISTS (
                  SELECT 1 FROM users u
                  WHERE u.id = $1
@@ -316,20 +350,38 @@ export async function GET(request: NextRequest) {
       );
       actionItems = {
         pending_approval: parseInt(pendingAssignRes.rows[0]?.count || 0),
+        pending_part4_approval: parseInt(pendingPart4ApprovalRes.rows[0]?.count || 0),
         needs_assignment: parseInt(pendingFinalRes.rows[0]?.count || 0),
       };
     } else if (userRole === 'ordaqa_head') {
-      // Still needs ORDAQA Head Part III (Section 23) — not merely “assigned/in progress”
-      const pendingPart3Res = await query(
-        `SELECT COUNT(*) as count FROM inspection_requests
+      const part3Base = `
          WHERE COALESCE(forwarded_to_ordaqa, false) = true
            AND status IN ('request_approved', 'assigned', 'in_progress')
            AND ordaqa_inspector_id IS NULL
-           AND COALESCE(part3_data::jsonb ->> 'section23_complete', '') NOT IN ('true', 't', '1', 'yes')
-           AND LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) <> 'yes'
-           AND COALESCE(TRIM(part3_data::jsonb ->> 'received_date_time'), '') = ''
-           AND COALESCE(TRIM(part3_data::jsonb ->> 'ordaqa_comments'), '') = ''
-           AND COALESCE(TRIM(part3_data::jsonb ->> 'delegation_type'), '') = ''`,
+           AND LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) <> 'yes'`;
+      const reforwardFlag = `
+           AND (
+             COALESCE(part3_data::jsonb ->> 'reforwarded_after_memo', '') IN ('true', 't', '1', 'yes')
+             OR EXISTS (
+               SELECT 1 FROM inspection_activities a
+               WHERE a.inspection_request_id = inspection_requests.id
+                 AND a.activity_type IN ('part3_memo_returned', 'part2_reforwarded_to_ordaqa')
+             )
+           )`;
+      const notReforwardFlag = `
+           AND COALESCE(part3_data::jsonb ->> 'reforwarded_after_memo', '') NOT IN ('true', 't', '1', 'yes')
+           AND NOT EXISTS (
+             SELECT 1 FROM inspection_activities a
+             WHERE a.inspection_request_id = inspection_requests.id
+               AND a.activity_type IN ('part3_memo_returned', 'part2_reforwarded_to_ordaqa')
+           )`;
+
+      const pendingPart3Res = await query(
+        `SELECT COUNT(*) as count FROM inspection_requests ${part3Base} ${notReforwardFlag}`,
+        []
+      );
+      const pendingReforwardRes = await query(
+        `SELECT COUNT(*) as count FROM inspection_requests ${part3Base} ${reforwardFlag}`,
         []
       );
       const activeOrdaqaRes = await query(
@@ -347,6 +399,7 @@ export async function GET(request: NextRequest) {
       );
       actionItems = {
         pending_approval: parseInt(pendingPart3Res.rows[0]?.count || 0),
+        pending_reforward: parseInt(pendingReforwardRes.rows[0]?.count || 0),
         needs_assignment: parseInt(pendingPart5Res.rows[0]?.count || 0),
         active_ordaqa: parseInt(activeOrdaqaRes.rows[0]?.count || 0),
       };

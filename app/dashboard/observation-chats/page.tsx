@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { ObservationChatDialog } from '@/components/observation-chat-dialog';
 import type { ObservationPart } from '@/lib/observation-chats-shared';
 import { acknowledgeObservationChat } from '@/lib/observation-chat-client';
+import { formatDateTimeDisplay } from '@/lib/inspection-display';
 
 interface ThreadItem {
   id: number;
@@ -49,12 +50,7 @@ interface InspectionGroup {
 
 function formatTime(iso: string | null): string {
   if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  } catch {
-    return iso;
-  }
+  return formatDateTimeDisplay(iso, '');
 }
 
 function groupThreadsByInspection(threads: ThreadItem[]): InspectionGroup[] {

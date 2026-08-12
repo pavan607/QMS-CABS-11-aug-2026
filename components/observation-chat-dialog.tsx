@@ -25,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import type { ObservationPart } from '@/lib/observation-chats-shared';
 import { acknowledgeObservationChat } from '@/lib/observation-chat-client';
+import { formatDateTimeDisplay } from '@/lib/inspection-display';
 
 interface ChatMessage {
   id: number;
@@ -62,12 +63,7 @@ interface ObservationChatDialogProps {
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 function formatChatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  } catch {
-    return iso;
-  }
+  return formatDateTimeDisplay(iso, iso);
 }
 
 function formatFileSize(bytes: number): string {

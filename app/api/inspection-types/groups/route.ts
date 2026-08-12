@@ -15,17 +15,22 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, description, sort_order, status } = body;
+    const { name, description, sort_order, status, applicable_sources } = body;
 
     if (!name) {
       return NextResponse.json({ error: 'Group name is required' }, { status: 400 });
     }
 
+    const sources =
+      Array.isArray(applicable_sources) && applicable_sources.length > 0
+        ? applicable_sources.map((s: unknown) => String(s).trim().toLowerCase()).filter(Boolean)
+        : null;
+
     const result = await query(
-      `INSERT INTO inspection_type_groups (name, description, sort_order, status, created_by)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO inspection_type_groups (name, description, sort_order, status, applicable_sources, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, description || null, sort_order || 0, status || 'active', currentUser.rows[0].id]
+      [name, description || null, sort_order || 0, status || 'active', sources, currentUser.rows[0].id]
     );
 
     return NextResponse.json({ group: result.rows[0] }, { status: 201 });
