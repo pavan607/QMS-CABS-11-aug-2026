@@ -1489,7 +1489,10 @@ export default function InspectionDetailPage() {
             })()}
             {(() => {
               const st = String(inspection.status || '');
-              const forwardedTo = inspection.part1_approver_name?.trim() || null;
+              const forwardedTo =
+                inspection.request_approver_name?.trim() ||
+                inspection.nominated_request_approver_name?.trim() ||
+                null;
               const reachedPart1Queue =
                 Boolean(forwardedTo) ||
                 st === 'pending_part1_approval' ||
@@ -1514,7 +1517,7 @@ export default function InspectionDetailPage() {
                   : inspection.part1_approved_by_name?.trim() || null;
               return (
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Part I forwarded to:{' '}
+                  Part I forwarded by:{' '}
                   <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
                   {' · '}
                   Part I approved by:{' '}
@@ -2791,9 +2794,11 @@ export default function InspectionDetailPage() {
                   )}
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Part I forwarded to</Label>
+                  <Label className="text-xs text-muted-foreground">Part I forwarded by</Label>
                   <p className="font-medium">
-                    {inspection.part1_approver_name?.trim() || '—'}
+                    {inspection.request_approver_name?.trim() ||
+                      inspection.nominated_request_approver_name?.trim() ||
+                      '—'}
                   </p>
                 </div>
                 <div>

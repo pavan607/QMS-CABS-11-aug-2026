@@ -35,7 +35,7 @@ export function AutoBackupSettings() {
     load().catch(() => setMessage('Failed to load auto-backup setting'));
   }, []);
 
-  const save = async (enabled: boolean, runNow = enabled) => {
+  const save = async (enabled: boolean, runNow = true) => {
     setSaving(true);
     setMessage('');
     try {
@@ -46,15 +46,29 @@ export function AutoBackupSettings() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update auto-backup');
-      setState((prev) => ({ ...(prev || { enabled: false, lastBackupAt: null, lastFile: null, lastError: null, lastOk: null }), ...data }));
-      if (enabled && data.run?.ok === false) {
+      setState((prev) => ({
+        ...(prev || {
+          enabled: true,
+          lastBackupAt: null,
+          lastFile: null,
+          lastError: null,
+          lastOk: null,
+        }),
+        ...data,
+      }));
+      if (data.run?.ok === false) {
         setMessage(data.run.error || 'Backup ran but failed');
-      } else if (enabled && data.schedule?.ok === false) {
-        setMessage(data.schedule.detail || 'Backup setting saved, but the daily schedule could not be registered');
+      } else if (data.schedule?.ok === false) {
+        setMessage(
+          data.schedule.detail ||
+            'Backup setting saved, but the daily schedule could not be registered'
+        );
+      } else if (data.run?.file) {
+        setMessage(`Backup saved: ${data.run.file}`);
       } else if (enabled) {
-        setMessage(data.run?.file ? `Backup saved: ${data.run.file}` : 'Daily auto-backup is on');
+        setMessage('Daily auto-backup is on');
       } else {
-        setMessage('Auto-backup is off');
+        setMessage('Preference saved — daily backup at 2:00 AM still runs');
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to update auto-backup');
@@ -69,13 +83,13 @@ export function AutoBackupSettings() {
         <div className="space-y-0.5">
           <Label className="font-semibold">Auto-backup</Label>
           <p className="text-sm text-muted-foreground">
-            Automatically backup the database daily at 2:00 AM
+            Database is backed up daily at 2:00 AM (runs even if this switch is off)
           </p>
         </div>
         <Switch
           checked={!!state?.enabled}
           disabled={saving || state == null}
-          onCheckedChange={(checked) => save(checked)}
+          onCheckedChange={(checked) => save(checked, true)}
         />
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -86,14 +100,14 @@ export function AutoBackupSettings() {
           </span>
         )}
         {state?.schedule?.detail && <span>{state.schedule.detail}</span>}
-        {state?.enabled && (
+        {state != null && (
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="h-7 text-xs"
             disabled={saving}
-            onClick={() => save(true, true)}
+            onClick={() => save(!!state.enabled, true)}
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
             Backup now

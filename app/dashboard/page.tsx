@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { formatCalendarDateDisplay, resolveInspectionCustody } from '@/lib/inspection-display';
 import { formatDateTimeDisplay } from '@/lib/inspection-display';
 import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
 import { usePermissions } from '@/lib/hooks/usePermissions';
@@ -738,12 +738,13 @@ export default function DashboardPage() {
         <CardContent className="px-0 pb-0">
           {inspectionRequests.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
+              <table className="w-full text-sm min-w-[920px]">
                 <thead>
                   <tr className="border-y bg-muted/40 text-left">
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">IR No.</th>
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Project / Programme</th>
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">Status</th>
+                    <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground min-w-[200px]">Currently with</th>
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Initiator</th>
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground">Inspector</th>
                     <th className="px-4 py-2.5 font-semibold text-xs text-muted-foreground whitespace-nowrap">Due date</th>
@@ -762,6 +763,7 @@ export default function DashboardPage() {
                       r.programme_name ||
                       r.project_code ||
                       '—';
+                    const custody = resolveInspectionCustody(r);
                     return (
                       <tr
                         key={r.id}
@@ -808,7 +810,10 @@ export default function DashboardPage() {
                             ]);
                             const showPart1Route = forwardedStatuses.has(String(r.status || ''));
                             if (!showPart1Route) return null;
-                            const forwardedTo = r.part1_approver_name?.trim() || null;
+                            const forwardedTo =
+                              r.request_approver_name?.trim() ||
+                              r.nominated_request_approver_name?.trim() ||
+                              null;
                             const approvedBy =
                               [
                                 'pending_part1_approval',
@@ -826,7 +831,7 @@ export default function DashboardPage() {
                             return (
                               <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground leading-snug max-w-[180px]">
                                 <p>
-                                  <span className="font-medium text-foreground/80">Part I forwarded to:</span>{' '}
+                                  <span className="font-medium text-foreground/80">Part I forwarded by:</span>{' '}
                                   {forwardedTo || '—'}
                                 </p>
                                 <p>
@@ -837,11 +842,42 @@ export default function DashboardPage() {
                             );
                           })()}
                         </td>
+                        <td className="px-4 py-3 align-top text-sm min-w-[200px] max-w-[280px]">
+                          {custody.stage === 'Completed' ? (
+                            <div className="leading-snug">
+                              <p className="font-medium text-foreground">Completed</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                Final approved by: {custody.name || '—'}
+                              </p>
+                            </div>
+                          ) : custody.stage === 'Rejected' ? (
+                            <div className="leading-snug">
+                              <p className="font-medium text-foreground">Rejected</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">{custody.action}</p>
+                            </div>
+                          ) : (
+                            <div className="leading-snug">
+                              <p className="font-medium text-foreground whitespace-normal break-words">
+                                {custody.name || custody.role || '—'}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {custody.name ? custody.role : null}
+                                {custody.name ? ' · ' : null}
+                                <span className="font-medium text-foreground/80">{custody.stage}</span>
+                              </p>
+                              {custody.action ? (
+                                <p className="text-[11px] text-muted-foreground mt-0.5 whitespace-normal">
+                                  {custody.action}
+                                </p>
+                              ) : null}
+                            </div>
+                          )}
+                        </td>
                         <td className="px-4 py-3 align-top text-sm whitespace-nowrap">
                           {r.initiator_name || '—'}
                         </td>
-                        <td className="px-4 py-3 align-top text-sm max-w-[160px]">
-                          <span className="line-clamp-2">{inspectors}</span>
+                        <td className="px-4 py-3 align-top text-sm min-w-[180px]">
+                          <span className="whitespace-normal break-words">{inspectors}</span>
                         </td>
                         <td className="px-4 py-3 align-top text-sm whitespace-nowrap tabular-nums">
                           {r.due_date ? formatCalendarDateDisplay(r.due_date) : '—'}

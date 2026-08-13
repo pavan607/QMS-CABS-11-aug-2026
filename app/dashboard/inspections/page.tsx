@@ -434,7 +434,10 @@ function InspectionsContent() {
                         })()}
                         {(() => {
                           const st = String(request.status || '');
-                          const forwardedTo = request.part1_approver_name?.trim() || null;
+                          const forwardedTo =
+                            request.request_approver_name?.trim() ||
+                            request.nominated_request_approver_name?.trim() ||
+                            null;
                           const reachedPart1Queue =
                             Boolean(forwardedTo) ||
                             st === 'pending_part1_approval' ||
@@ -454,7 +457,7 @@ function InspectionsContent() {
                               : request.part1_approved_by_name?.trim() || null;
                           return (
                             <p className="text-xs text-muted-foreground mb-2">
-                              Part I forwarded to:{' '}
+                              Part I forwarded by:{' '}
                               <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
                               {' · '}
                               Part I approved by:{' '}

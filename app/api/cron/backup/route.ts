@@ -1,13 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseBoolSetting, getSetting } from '@/lib/app-settings';
-import path from 'path';
+import { runBackup } from '@/lib/daily-backup';
 
-function loadBackupScript(): { runBackup: () => { file?: string | null; lastBackupAt?: string | null } } {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(path.join(process.cwd(), 'scripts', 'daily-backup.js'));
-}
-
-/** Daily backup trigger — used by Task Scheduler or external cron. */
+/** Daily backup trigger — used by Task Scheduler or external cron. Always runs (switch does not skip). */
 export async function GET(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization');
@@ -16,13 +11,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const enabled = parseBoolSetting(await getSetting('auto_backup'), false);
-    if (!enabled) {
-      return NextResponse.json({ skipped: true, reason: 'Auto-backup is turned off' });
-    }
+    // Setting is informational only — daily backup still runs when the UI switch is off
+    void parseBoolSetting(await getSetting('auto_backup'), true);
 
-    const backup = loadBackupScript();
-    const status = backup.runBackup();
+    const status = runBackup();
     return NextResponse.json({ ok: true, file: status.file, at: status.lastBackupAt });
   } catch (error) {
     console.error('Auto-backup failed:', error);
