@@ -6,30 +6,6 @@ import {
   normalizeSourceValue,
 } from '@/lib/inspection-display';
 
-function parseApplicableSources(raw: unknown): string[] | null {
-  if (raw == null) return null;
-  if (Array.isArray(raw)) {
-    const list = raw.map((s) => String(s).trim().toLowerCase()).filter(Boolean);
-    return list.length ? list : null;
-  }
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    // Postgres may return "{a,b}" as text in some drivers
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      const inner = trimmed.slice(1, -1);
-      if (!inner) return null;
-      const list = inner
-        .split(',')
-        .map((s) => s.replace(/^"|"$/g, '').trim().toLowerCase())
-        .filter(Boolean);
-      return list.length ? list : null;
-    }
-    return [trimmed.toLowerCase()];
-  }
-  return null;
-}
-
 // GET all groups with their items (used by both admin page and inspection form dropdown)
 export async function GET(request: NextRequest) {
   try {
@@ -55,7 +31,6 @@ export async function GET(request: NextRequest) {
         g.created_by,
         g.created_at,
         g.updated_at,
-        g.applicable_sources,
         COALESCE(
           json_agg(
             json_build_object(
@@ -85,9 +60,8 @@ export async function GET(request: NextRequest) {
       `,
     );
 
-    let groups = result.rows.map((row: { items: unknown; applicable_sources?: unknown }) => ({
+    let groups = result.rows.map((row: { items: unknown }) => ({
       ...row,
-      applicable_sources: parseApplicableSources(row.applicable_sources),
       items: Array.isArray(row.items) ? row.items : [],
     }));
 
@@ -100,16 +74,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ groups, items });
   } catch (error) {
     console.error('Error fetching inspection types:', error);
-    const msg = error instanceof Error ? error.message : '';
-    if (/applicable_sources/i.test(msg)) {
-      return NextResponse.json(
-        {
-          error:
-            'Inspection type source mapping is not installed. Run database migrations (024_source_applicable_inspection_stages).',
-        },
-        { status: 500 }
-      );
-    }
     return NextResponse.json({ error: 'Failed to fetch inspection types' }, { status: 500 });
   }
 }

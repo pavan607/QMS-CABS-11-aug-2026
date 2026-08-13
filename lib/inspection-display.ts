@@ -137,37 +137,24 @@ export function formatSourceLabel(source: unknown, empty = '—'): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
-/** Whether an inspection-type group applies to the selected Source.
- *  - COTS source: COTS stages plus all other inspection stages.
- *  - Other sources: all groups except COTS-only groups (empty applicable = non-COTS).
+/** Whether an inspection-type group applies to the selected Part I Source.
+ *  COTS categories are identified by name (e.g. "COTS", "COTS Inspection").
+ *  - COTS item: every category, including COTS.
+ *  - Indigenous / Imported: every category except COTS-only ones.
  */
 export function inspectionTypeGroupAppliesToSource(
-  group: { applicable_sources?: string[] | null; name?: string | null },
+  group: { name?: string | null },
   source: string,
 ): boolean {
   const key = normalizeSourceValue(source);
-  const applicable = Array.isArray(group.applicable_sources)
-    ? group.applicable_sources.map((s) => String(s).trim().toLowerCase()).filter(Boolean)
-    : [];
-  const isCotsOnly =
-    applicable.length > 0 &&
-    applicable.every((s) => s === 'cots' || s === 'cots_item');
-  // Fallback: category named like "COTS …" treated as COTS-only if mapping unset
   const nameLooksCots = /^cots\b/i.test(String(group.name || '').trim());
-  const cotsOnly = isCotsOnly || (applicable.length === 0 && nameLooksCots);
 
-  // COTS item: show COTS stages and every other category
   if (key === 'cots_item') return true;
-
-  // Indigenous / Imported / unset: hide COTS-only categories
-  if (cotsOnly) return false;
-  if (applicable.length === 0) return true;
-  if (!key) return true;
-  return applicable.includes(key);
+  return !nameLooksCots;
 }
 
 export function filterInspectionTypeGroupsBySource<
-  T extends { applicable_sources?: string[] | null; name?: string | null; items?: unknown[] },
+  T extends { name?: string | null; items?: unknown[] },
 >(groups: T[], source: string): T[] {
   return (groups || []).filter((g) => inspectionTypeGroupAppliesToSource(g, source));
 }

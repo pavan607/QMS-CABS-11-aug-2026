@@ -22,7 +22,6 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { SOURCE_OPTIONS } from '@/lib/inspection-display';
 
 interface InspectionTypeGroup {
   id: number;
@@ -30,7 +29,6 @@ interface InspectionTypeGroup {
   description: string;
   sort_order: number;
   status: string;
-  applicable_sources?: string[] | null;
   items: InspectionTypeItem[];
 }
 
@@ -61,7 +59,6 @@ export default function InspectionTypesPage() {
     description: '',
     sort_order: '0',
     status: 'active',
-    applicable_sources: [] as string[],
   });
   const [itemForm, setItemForm] = useState({ name: '', description: '', sort_order: '0', status: 'active' });
 
@@ -92,7 +89,7 @@ export default function InspectionTypesPage() {
 
   // --- Dialog handlers ---
   const openAddGroup = () => {
-    setGroupForm({ name: '', description: '', sort_order: '0', status: 'active', applicable_sources: [] });
+    setGroupForm({ name: '', description: '', sort_order: '0', status: 'active' });
     setDialogMode('add-group');
   };
 
@@ -103,9 +100,6 @@ export default function InspectionTypesPage() {
       description: group.description || '',
       sort_order: String(group.sort_order),
       status: group.status,
-      applicable_sources: Array.isArray(group.applicable_sources)
-        ? group.applicable_sources.map((s) => String(s).toLowerCase())
-        : [],
     });
     setDialogMode('edit-group');
   };
@@ -148,9 +142,6 @@ export default function InspectionTypesPage() {
         body: JSON.stringify({
           ...groupForm,
           sort_order: parseInt(groupForm.sort_order) || 0,
-          applicable_sources: groupForm.applicable_sources.length
-            ? groupForm.applicable_sources
-            : null,
         }),
       });
 
@@ -346,17 +337,6 @@ export default function InspectionTypesPage() {
                             <Badge variant="outline" className="ml-1 text-xs">
                               {items.length} item{items.length !== 1 ? 's' : ''}
                             </Badge>
-                            {Array.isArray(group.applicable_sources) && group.applicable_sources.length > 0 ? (
-                              <Badge variant="secondary" className="ml-1 text-[10px] font-normal">
-                                {group.applicable_sources
-                                  .map((s) => SOURCE_OPTIONS.find((o) => o.value === s)?.label || s)
-                                  .join(', ')}
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="ml-1 text-[10px] font-normal text-muted-foreground">
-                                Non-COTS sources
-                              </Badge>
-                            )}
                           </div>
                         </TableCell>
                         <TableCell>{statusBadge(group.status)}</TableCell>
@@ -470,35 +450,6 @@ export default function InspectionTypesPage() {
                       <SelectItem value="inactive">Inactive</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-              </div>
-              <div className="grid gap-2">
-                <Label>Applies to Part I Source</Label>
-                <p className="text-xs text-muted-foreground">
-                  Leave all unchecked for Indigenous / Imported (non-COTS). Check COTS item for COTS-only stages.
-                </p>
-                <div className="flex flex-wrap gap-3">
-                  {SOURCE_OPTIONS.map((opt) => {
-                    const checked = groupForm.applicable_sources.includes(opt.value);
-                    return (
-                      <label key={opt.value} className="flex items-center gap-2 text-sm cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-input"
-                          checked={checked}
-                          onChange={() => {
-                            setGroupForm((prev) => ({
-                              ...prev,
-                              applicable_sources: checked
-                                ? prev.applicable_sources.filter((s) => s !== opt.value)
-                                : [...prev.applicable_sources, opt.value],
-                            }));
-                          }}
-                        />
-                        {opt.label}
-                      </label>
-                    );
-                  })}
                 </div>
               </div>
             </div>

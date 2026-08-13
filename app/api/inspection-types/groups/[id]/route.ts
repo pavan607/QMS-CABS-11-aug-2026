@@ -19,23 +19,18 @@ export async function PUT(
 
     const { id } = await params;
     const body = await request.json();
-    const { name, description, sort_order, status, applicable_sources } = body;
+    const { name, description, sort_order, status } = body;
 
     if (!name) {
       return NextResponse.json({ error: 'Group name is required' }, { status: 400 });
     }
 
-    const sources =
-      Array.isArray(applicable_sources) && applicable_sources.length > 0
-        ? applicable_sources.map((s: unknown) => String(s).trim().toLowerCase()).filter(Boolean)
-        : null;
-
     const result = await query(
       `UPDATE inspection_type_groups
        SET name = $1, description = $2, sort_order = $3, status = $4,
-           applicable_sources = $5, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6 RETURNING *`,
-      [name, description || null, sort_order || 0, status || 'active', sources, id]
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5 RETURNING *`,
+      [name, description || null, sort_order || 0, status || 'active', id]
     );
 
     if (result.rows.length === 0) {

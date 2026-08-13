@@ -71,7 +71,6 @@ interface SRU { id: number; lru_id: number; name: string; code: string; part_num
 interface InspectionTypeGroup {
   id: number;
   name: string;
-  applicable_sources?: string[] | null;
   items: { id: number; name: string; code: string }[];
 }
 interface Approver {
