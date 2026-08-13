@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { AutoBackupSettings } from '@/components/auto-backup-settings';
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -96,15 +97,7 @@ export default async function SettingsPage() {
                 </div>
                 <Switch />
               </div>
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label className="font-semibold">Auto-backup</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Automatically backup data daily
-                  </p>
-                </div>
-                <Switch defaultChecked />
-              </div>
+              <AutoBackupSettings />
             </CardContent>
           </Card>
 

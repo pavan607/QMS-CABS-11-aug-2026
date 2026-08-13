@@ -26,6 +26,7 @@
     "db:reset-all-passwords": "tsx database/reset-all-passwords.ts",
     "db:test-login": "tsx database/test-login.ts",
     "db:migrate": "node scripts/run-migrations.js",
+    "db:backup": "node scripts/daily-backup.js",
     "db:verify-qc": "node scripts/verify-quality-checks.js",
     "training:ppt": "node scripts/generate-training-ppt.mjs",
     "training:seed-workflow": "node scripts/seed-training-workflow.mjs",

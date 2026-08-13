@@ -564,12 +564,15 @@ export default function HelpDeskPage() {
           <DialogHeader>
             <DialogTitle>{viewing?.title}</DialogTitle>
             <DialogDescription>
-              {viewing && (
+              {viewing ? `${CATEGORY_LABELS[viewing.category]} resource` : 'Help desk resource details'}
+            </DialogDescription>
+            {viewing && (
+              <div>
                 <Badge variant="outline" className={categoryBadgeClass(viewing.category)}>
                   {CATEGORY_LABELS[viewing.category]}
                 </Badge>
-              )}
-            </DialogDescription>
+              </div>
+            )}
           </DialogHeader>
           {viewing && (
             <div className="space-y-4 py-2">

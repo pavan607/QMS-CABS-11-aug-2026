@@ -71,6 +71,7 @@ deploy/QMS-Standalone.zip
 !database/migrations/**
 !DB Backup/
 !DB Backup/**
+DB Backup/auto/
 deploy/qms.tar
 
 # Office lock files and temp CSS
