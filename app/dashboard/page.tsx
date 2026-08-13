@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { formatCalendarDateDisplay, resolveInspectionCustody } from '@/lib/inspection-display';
 import { formatDateTimeDisplay } from '@/lib/inspection-display';
-import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
+import { roleCanSeeObservationChatBanner } from '@/lib/observation-chats-shared';
 import { usePermissions } from '@/lib/hooks/usePermissions';
 import { employeeIsPart1Approver } from '@/lib/part1-approver';
 
@@ -121,7 +121,7 @@ export default function DashboardPage() {
   }, [status]);
 
   const fetchObsChatStats = async () => {
-    if (!roleCanViewObservationChats(userRole)) return;
+    if (!roleCanSeeObservationChatBanner(userRole)) return;
     try {
       const res = await fetch('/api/observation-chats?exclude_closed=true', { cache: 'no-store' });
       const obsData = await res.json();
@@ -139,7 +139,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (status !== 'authenticated') return;
-    if (!roleCanViewObservationChats(userRole)) return;
+    if (!roleCanSeeObservationChatBanner(userRole)) return;
     const onChatUpdate = () => void fetchObsChatStats();
     window.addEventListener('observation-chat-acknowledged', onChatUpdate);
     const interval = setInterval(fetchObsChatStats, 30000);
@@ -155,7 +155,7 @@ export default function DashboardPage() {
         fetch('/api/inspection-requests/stats'),
         fetch('/api/inspection-requests'),
         fetch('/api/notifications?unread_only=true&limit=5'),
-        roleCanViewObservationChats(userRole)
+        roleCanSeeObservationChatBanner(userRole)
           ? fetch('/api/observation-chats?exclude_closed=true')
           : Promise.resolve(null),
       ]);
@@ -625,7 +625,7 @@ export default function DashboardPage() {
       )}
 
       {/* Observation Chats — all Parts 1–5 stakeholders */}
-      {roleCanViewObservationChats(userRole) && (
+      {roleCanSeeObservationChatBanner(userRole) && (
         <Card
           className={`border-0 shadow-sm ${
             obsChatStats.unreadCount > 0

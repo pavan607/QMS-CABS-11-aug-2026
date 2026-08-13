@@ -31,6 +31,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { usePermissions } from '@/lib/hooks/usePermissions';
+import { roleCanViewObservationChats } from '@/lib/observation-chats-shared';
 import { IdleTimeoutHandler } from '@/components/idle-timeout';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { NotificationDropdown } from '@/components/notification-dropdown';
@@ -47,16 +48,7 @@ export default function DashboardLayout({
   const permissions = usePermissions();
 
   const rawRole = (session?.user as { role?: string })?.role || '';
-  const showObservationChats = [
-    'inspector',
-    'ordaqa_inspector',
-    'initiator',
-    'request_approver',
-    'qa_approver',
-    'qa_head',
-    'ordaqa_head',
-    'administrator',
-  ].includes(rawRole);
+  const showObservationChats = roleCanViewObservationChats(rawRole);
 
   const [pwDialogOpen, setPwDialogOpen] = useState(false);
   const [pwForm, setPwForm] = useState({ current: '', newPw: '', confirm: '' });

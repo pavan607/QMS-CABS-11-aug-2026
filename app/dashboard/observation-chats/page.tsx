@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   MessageSquare,
@@ -16,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ObservationChatDialog } from '@/components/observation-chat-dialog';
-import type { ObservationPart } from '@/lib/observation-chats-shared';
+import { roleCanViewObservationChats, type ObservationPart } from '@/lib/observation-chats-shared';
 import { acknowledgeObservationChat } from '@/lib/observation-chat-client';
 import { formatDateTimeDisplay } from '@/lib/inspection-display';
 
@@ -98,8 +99,10 @@ function groupThreadsByInspection(threads: ThreadItem[]): InspectionGroup[] {
 }
 
 export default function ObservationChatsPage() {
-  const { data: session } = useSession();
-  const userRole = (session?.user as { role?: string })?.role || 'initiator';
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  const userRole = (session?.user as { role?: string })?.role || '';
+  const canViewChats = roleCanViewObservationChats(userRole);
   const [threads, setThreads] = useState<ThreadItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeChat, setActiveChat] = useState<ThreadItem | null>(null);
@@ -127,6 +130,7 @@ export default function ObservationChatsPage() {
   };
 
   const loadThreads = async () => {
+    if (!canViewChats) return;
     setLoading(true);
     try {
       const res = await fetch('/api/observation-chats', { cache: 'no-store' });
@@ -143,8 +147,14 @@ export default function ObservationChatsPage() {
   };
 
   useEffect(() => {
-    void loadThreads();
-  }, []);
+    if (status === 'authenticated' && !canViewChats) {
+      router.replace('/dashboard');
+      return;
+    }
+    if (status === 'authenticated' && canViewChats) {
+      void loadThreads();
+    }
+  }, [status, canViewChats]);
 
   const inspectionGroups = useMemo(() => groupThreadsByInspection(threads), [threads]);
 
@@ -177,6 +187,10 @@ export default function ObservationChatsPage() {
   const openThreads = threads.filter((t) => !t.is_closed);
   const closedThreads = threads.filter((t) => t.is_closed);
   const totalUnread = threads.reduce((sum, t) => sum + (Number(t.unread_count) || 0), 0);
+
+  if (status !== 'authenticated' || !canViewChats) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">

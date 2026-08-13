@@ -166,6 +166,26 @@ if errorlevel 1 pause
   );
 
   writeFile(
+    path.join(OUT_DIR, 'START HERE.txt'),
+    `QMS — how to run this package
+================================
+
+This folder is the complete application runtime. Source code is not included.
+
+Windows
+  1. Copy env.example to .env and edit DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL
+  2. Double-click QMS.exe  (or start.bat if QMS.exe is not present)
+  3. Open http://localhost:3000 in a browser
+
+Linux / macOS
+  1. Copy env.example to .env and edit the same three values
+  2. chmod +x start.sh && ./start.sh
+
+PostgreSQL must already be installed and reachable. See README.md for details.
+`
+  );
+
+  writeFile(
     path.join(OUT_DIR, 'stop.bat'),
     `@echo off
 setlocal
@@ -240,6 +260,7 @@ This folder is a **production runtime package**. It does **not** include applica
 
 | Item | Purpose |
 |------|---------|
+| \`QMS.exe\` | Windows launcher (double-click to start) |
 | \`server.js\` | Compiled Next.js production server |
 | \`node_modules/\` | Minimal runtime dependencies (traced by Next.js) |
 | \`.next/\` | Compiled server + static assets |
@@ -264,7 +285,7 @@ This folder is a **production runtime package**. It does **not** include applica
    - \`NEXTAUTH_URL\` (exact browser URL, e.g. \`http://localhost:3000\` or \`http://server-name:3000\`)
 2. Ensure the database schema/migrations have been applied (vendor procedure).
 3. Start:
-   - **Windows:** double-click \`start.bat\` (or \`start.vbs\`)
+   - **Windows:** double-click \`QMS.exe\` (or \`start.bat\` / \`start.vbs\`)
    - **Linux/macOS:** \`chmod +x start.sh && ./start.sh\`
 
 Open the URL from \`NEXTAUTH_URL\` in a browser.
@@ -298,7 +319,115 @@ AUTH_TRUST_HOST=true
     /NEXTAUTH_SECRET=.*/g,
     'NEXTAUTH_SECRET=change-me-generate-with-openssl-rand-base64-32'
   );
+  if (!/NEXT_PUBLIC_APP_URL=/.test(body)) {
+    body += '\nNEXT_PUBLIC_APP_URL=http://localhost:3000\n';
+  }
   writeFile(path.join(OUT_DIR, 'env.example'), body);
+}
+
+function compileQmsExe() {
+  if (process.platform !== 'win32') return;
+  const csPath = path.join(OUT_DIR, '_qms_launcher.cs');
+  const exePath = path.join(OUT_DIR, 'QMS.exe');
+  writeFile(
+    csPath,
+    `using System;
+using System.Diagnostics;
+using System.IO;
+
+class QmsLauncher {
+  static int Main() {
+    string dir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    Directory.SetCurrentDirectory(dir);
+    string envFile = Path.Combine(dir, ".env");
+    string envExample = Path.Combine(dir, "env.example");
+    if (!File.Exists(envFile)) {
+      Console.WriteLine();
+      Console.WriteLine("[QMS] Missing .env file.");
+      if (File.Exists(envExample)) {
+        File.Copy(envExample, envFile, false);
+        Console.WriteLine("       Created .env from env.example — edit DATABASE_URL, NEXTAUTH_SECRET, and NEXTAUTH_URL before production use.");
+      } else {
+        Console.WriteLine("       Copy env.example to .env and edit DATABASE_URL / NEXTAUTH_SECRET / NEXTAUTH_URL");
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey(true);
+        return 1;
+      }
+      Console.WriteLine();
+    }
+    string node = Path.Combine(dir, "runtime", "node.exe");
+    if (!File.Exists(node)) {
+      Console.WriteLine("[QMS] runtime\\\\node.exe not found. Place a portable Node.js binary in runtime\\\\ or install Node.js 20+.");
+      Console.WriteLine("Press any key to exit...");
+      Console.ReadKey(true);
+      return 1;
+    }
+    if (!File.Exists(Path.Combine(dir, "server.js"))) {
+      Console.WriteLine("[QMS] server.js not found. This folder is incomplete.");
+      Console.WriteLine("Press any key to exit...");
+      Console.ReadKey(true);
+      return 1;
+    }
+    ProcessStartInfo psi = new ProcessStartInfo();
+    psi.FileName = node;
+    psi.Arguments = "server.js";
+    psi.WorkingDirectory = dir;
+    psi.UseShellExecute = false;
+    psi.EnvironmentVariables["NODE_ENV"] = "production";
+    psi.EnvironmentVariables["PORT"] = "3000";
+    psi.EnvironmentVariables["HOSTNAME"] = "0.0.0.0";
+    psi.EnvironmentVariables["AUTH_TRUST_HOST"] = "true";
+    Console.WriteLine();
+    Console.WriteLine("Starting QMS on http://localhost:3000 ...");
+    Console.WriteLine("Press Ctrl+C to stop.");
+    Console.WriteLine();
+    Process child = Process.Start(psi);
+    if (child == null) {
+      Console.WriteLine("[QMS] Failed to start runtime\\\\node.exe");
+      return 1;
+    }
+    Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e) {
+      e.Cancel = true;
+      try { if (!child.HasExited) child.Kill(); } catch {}
+    };
+    child.WaitForExit();
+    if (child.ExitCode != 0) {
+      Console.WriteLine();
+      Console.WriteLine("QMS exited with an error. Press any key to close...");
+      try { Console.ReadKey(true); } catch {}
+    }
+    return child.ExitCode;
+  }
+}
+`
+  );
+  const cscCandidates = [
+    path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
+    path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
+  ];
+  const csc = cscCandidates.find((p) => fs.existsSync(p));
+  try {
+    if (csc) {
+      execSync(`"${csc}" /nologo /target:exe /out:"${exePath}" "${csPath}"`, {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else {
+      execSync(
+        `powershell -NoProfile -Command "Add-Type -TypeDefinition (Get-Content -Raw -Path '${csPath.replace(/'/g, "''")}') -OutputAssembly '${exePath.replace(/'/g, "''")}' -OutputType ConsoleApplication"`,
+        { stdio: 'ignore', windowsHide: true }
+      );
+    }
+    if (fs.existsSync(exePath)) {
+      ok('Created QMS.exe launcher');
+    } else {
+      warn('QMS.exe was not created — customers can use start.bat');
+    }
+  } catch (e) {
+    warn(`Could not compile QMS.exe (${e.message}) — customers can use start.bat`);
+  } finally {
+    rmrf(csPath);
+  }
 }
 
 function bundleNodeRuntime() {
@@ -341,9 +470,9 @@ function assertNoSourceLeak() {
     'middleware.ts',
     'tsconfig.json',
     'database/init.ts',
-    'scripts',
     'src',
   ];
+  // scripts/daily-backup.js is traced into standalone as a runtime helper (not app source).
   const leaks = [];
   for (const name of forbidden) {
     const p = path.join(OUT_DIR, name);
@@ -445,12 +574,19 @@ function main() {
   // Next places static assets outside standalone; copy them in
   copyRecursive(staticDir, path.join(OUT_DIR, '.next', 'static'));
   copyRecursive(publicDir, path.join(OUT_DIR, 'public'), {
-    filter: (full, name) => {
-      // Keep uploads directory structure but skip large user files if desired —
-      // still include folder placeholders
+    filter: (full) => {
+      const rel = path.relative(publicDir, full).split(path.sep);
+      if (rel[0] === 'uploads') {
+        try {
+          return fs.statSync(full).isDirectory();
+        } catch {
+          return false;
+        }
+      }
       return true;
     },
   });
+  mkdirp(path.join(OUT_DIR, 'public', 'uploads'));
   // Never ship secrets
   for (const secret of ['.env', '.env.local', '.env.production', '.env.development']) {
     const p = path.join(OUT_DIR, secret);
@@ -467,6 +603,7 @@ function main() {
 
   log('\n[5/7] Writing launchers and customer docs...');
   createLaunchers();
+  compileQmsExe();
   createEnvExample();
   createReadme();
   ok('Launchers + README + env.example written');
@@ -496,7 +633,7 @@ function main() {
   log('\nCustomer steps:');
   log('  1. Copy deploy/QMS-Standalone to the target PC');
   log('  2. Edit .env (from env.example)');
-  log('  3. Run start.bat (Windows) or ./start.sh (Linux/macOS)');
+  log('  3. Run QMS.exe or start.bat (Windows) or ./start.sh (Linux/macOS)');
   log('  4. Open NEXTAUTH_URL in the browser\n');
 }
 

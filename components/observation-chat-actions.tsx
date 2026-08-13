@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { MessageSquare, CircleCheck, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ObservationChatDialog } from '@/components/observation-chat-dialog';
-import { generateObservationChatId } from '@/lib/observation-chats-shared';
+import { generateObservationChatId, roleCanViewObservationChats } from '@/lib/observation-chats-shared';
 import type { ObservationPart } from '@/lib/observation-chats-shared';
 import { acknowledgeObservationChat } from '@/lib/observation-chat-client';
 
@@ -50,6 +51,8 @@ export function ObservationChatActions({
   onRefreshThreadStatus,
   threadMeta = null,
 }: ObservationChatActionsProps) {
+  const { data: session } = useSession();
+  const canViewChats = roleCanViewObservationChats((session?.user as { role?: string })?.role || '');
   const observationText = String(remark.observation || '').trim();
   const hasObservation = observationText.length > 0;
 
@@ -141,7 +144,7 @@ export function ObservationChatActions({
     }
   };
 
-  if (!hasObservation) return null;
+  if (!canViewChats || !hasObservation) return null;
 
   const chatReady = sentToInitiator || !canClose;
 
@@ -240,13 +243,15 @@ export function useObservationThreadStatus(
   inspectionRequestId: number,
   enabled: boolean
 ): { statusMap: ObservationThreadStatusMap; refresh: () => void } {
+  const { data: session } = useSession();
+  const canViewChats = roleCanViewObservationChats((session?.user as { role?: string })?.role || '');
   const [statusMap, setStatusMap] = useState<ObservationThreadStatusMap>({});
   const [tick, setTick] = useState(0);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
-    if (!enabled || !inspectionRequestId) return;
+    if (!canViewChats || !enabled || !inspectionRequestId) return;
     let cancelled = false;
 
     const load = () => {
@@ -276,7 +281,7 @@ export function useObservationThreadStatus(
       cancelled = true;
       clearInterval(interval);
     };
-  }, [inspectionRequestId, enabled, tick]);
+  }, [inspectionRequestId, enabled, tick, canViewChats]);
 
   return { statusMap, refresh };
 }

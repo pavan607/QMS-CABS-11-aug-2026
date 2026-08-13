@@ -156,7 +156,7 @@ export async function canAccessObservationChat(
   employeeId?: string | null,
   designation?: string | null
 ): Promise<boolean> {
-  if (!roleCanViewObservationChats(userRole) && !userHasGlobalInspectionAccess(userRole, employeeId)) {
+  if (!roleCanViewObservationChats(userRole)) {
     return false;
   }
   return userCanAccessInspectionRequest(userRole, userId, ir, employeeId, designation);
@@ -390,7 +390,7 @@ export async function listObservationThreadsForUser(
 > {
   await ensureObservationChatTables();
 
-  if (!roleCanViewObservationChats(userRole) && !userHasGlobalInspectionAccess(userRole)) {
+  if (!roleCanViewObservationChats(userRole)) {
     return [];
   }
 

@@ -9,7 +9,7 @@ export interface ObservationRemarkWithChat {
   chat_id?: string;
 }
 
-/** Roles that participate in Parts 1–5 and should see observation chats on the dashboard. */
+/** Roles that can open Observation Chats (sidebar menu and chat pages). */
 export const OBSERVATION_CHAT_VIEW_ROLES = [
   'administrator',
   'initiator',
@@ -19,10 +19,25 @@ export const OBSERVATION_CHAT_VIEW_ROLES = [
   'inspector',
   'ordaqa_head',
   'ordaqa_inspector',
+  'os_director',
+  'os',
+  'director',
 ] as const;
 
+function normalizeObservationChatRole(role: string): string {
+  return role === 'os' || role === 'director' ? 'os_director' : role;
+}
+
 export function roleCanViewObservationChats(role: string): boolean {
-  return (OBSERVATION_CHAT_VIEW_ROLES as readonly string[]).includes(role);
+  const normalized = normalizeObservationChatRole(role);
+  return (OBSERVATION_CHAT_VIEW_ROLES as readonly string[]).includes(normalized);
+}
+
+/** Dashboard home banner — hidden for OS & Director (they still get the sidebar menu). */
+export function roleCanSeeObservationChatBanner(role: string): boolean {
+  const normalized = normalizeObservationChatRole(role);
+  if (normalized === 'os_director') return false;
+  return roleCanViewObservationChats(role);
 }
 
 export function generateObservationChatId(): string {
