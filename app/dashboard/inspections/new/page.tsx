@@ -2426,8 +2426,8 @@ function NewInspectionRequestForm() {
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) {
-                          if (f.size > 10 * 1024 * 1024) {
-                            alert('File size exceeds 10MB limit');
+                          if (f.size > 20 * 1024 * 1024) {
+                            alert('File size exceeds 20MB limit');
                             return;
                           }
                           setSupplyOrderFile(f);
@@ -2445,7 +2445,7 @@ function NewInspectionRequestForm() {
                   }`}
                 >
                   <Paperclip className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-muted-foreground">Upload Supply Order (max 10MB) *</span>
+                  <span className="text-muted-foreground">Upload Supply Order (max 20MB) *</span>
                   <input
                     type="file"
                     className="hidden"
@@ -2453,8 +2453,8 @@ function NewInspectionRequestForm() {
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) {
-                        if (f.size > 10 * 1024 * 1024) {
-                          alert('File size exceeds 10MB limit');
+                        if (f.size > 20 * 1024 * 1024) {
+                          alert('File size exceeds 20MB limit');
                           return;
                         }
                         setSupplyOrderFile(f);
@@ -2846,7 +2846,7 @@ function NewInspectionRequestForm() {
                         }`}
                       >
                         <Paperclip className="h-4 w-4 text-muted-foreground" />
-                        <span className="text-muted-foreground">Attach log book copy (max 10MB) *</span>
+                        <span className="text-muted-foreground">Attach log book copy (max 20MB) *</span>
                         <input
                           type="file"
                           className="hidden"
@@ -2854,8 +2854,8 @@ function NewInspectionRequestForm() {
                           onChange={(e) => {
                             const f = e.target.files?.[0];
                             if (f) {
-                              if (f.size > 10 * 1024 * 1024) {
-                                alert('File size exceeds 10MB limit');
+                              if (f.size > 20 * 1024 * 1024) {
+                                alert('File size exceeds 20MB limit');
                                 return;
                               }
                               setLogbookFile(f);

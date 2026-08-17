@@ -108,10 +108,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Validate file size (max 10MB)
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    // Validate file size (max 20MB)
+    const maxSize = 20 * 1024 * 1024; // 20MB
     if (file.size > maxSize) {
-      return NextResponse.json({ error: 'File size exceeds 10MB limit' }, { status: 400 });
+      return NextResponse.json({ error: 'File size exceeds 20MB limit' }, { status: 400 });
     }
 
     // Create uploads directory if it doesn't exist

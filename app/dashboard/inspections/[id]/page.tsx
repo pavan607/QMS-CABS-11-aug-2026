@@ -694,8 +694,8 @@ export default function InspectionDetailPage() {
     let successCount = 0;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (file.size > 10 * 1024 * 1024) {
-        alert(`"${file.name}" exceeds 10 MB limit and was skipped.`);
+      if (file.size > 20 * 1024 * 1024) {
+        alert(`"${file.name}" exceeds 20 MB limit and was skipped.`);
         setUploadProgress(p => ({ ...p, done: p.done + 1 }));
         continue;
       }
@@ -1990,15 +1990,6 @@ export default function InspectionDetailPage() {
                 },
                 // Tick when Part IV is submitted (pending Team Head or already approved)
                 { key: 'Part IV', done: p4Submitted },
-                {
-                  key: 'Inspection',
-                  // Same as Part IV submit — both tick when Part IV is submitted
-                  done:
-                    p4Submitted ||
-                    ['inspection_completed', 'completed', 'approved', 'pending_ordaqa_approval', 'qa_approved'].includes(
-                      inspection.status
-                    ),
-                },
                 ...(!part5Na
                   ? [
                       {
@@ -2011,7 +2002,6 @@ export default function InspectionDetailPage() {
                       } as { key: string; done: boolean; na?: boolean },
                     ]
                   : []),
-                { key: 'Approved', done: !!inspection.final_qa_approver_id },
                 { key: 'Completed', done: inspection.status === 'completed' },
               ];
               return steps.map((step, i) => (
@@ -3696,7 +3686,7 @@ export default function InspectionDetailPage() {
                   <CardTitle>Attachments</CardTitle>
                   <CardDescription>
                     {canManageAttachments
-                      ? 'Photos, documents, and evidence files (max 10 MB each)'
+                      ? 'Photos, documents, and evidence files (max 20 MB each)'
                       : irCompleted
                         ? 'This IR is completed — attachments are read-only'
                         : isInspectorRole
@@ -6577,7 +6567,7 @@ function Part4Form({
                     }`}
                   >
                     <Paperclip className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-muted-foreground">Attach log book copy (max 10MB) *</span>
+                    <span className="text-muted-foreground">Attach log book copy (max 20MB) *</span>
                     <input
                       type="file"
                       className="hidden"
@@ -6585,8 +6575,8 @@ function Part4Form({
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) {
-                          if (f.size > 10 * 1024 * 1024) {
-                            alert('File size exceeds 10MB limit');
+                          if (f.size > 20 * 1024 * 1024) {
+                            alert('File size exceeds 20MB limit');
                             return;
                           }
                           setLogbookCopyPart4File(f);
