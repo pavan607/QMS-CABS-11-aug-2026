@@ -3484,28 +3484,28 @@ export default function InspectionDetailPage() {
                 }
 
                 if (!isForwarded && !showSection23) {
-                  if (jointInspectionRequestedInPart1(inspection)) {
+                  if (
+                    jointInspectionRequestedInPart1(inspection) &&
+                    inspectionSkipsRqaPart2AndPart4(inspection)
+                  ) {
                     return (
                       <div className="text-center py-8 text-muted-foreground">
                         <p className="font-medium">Part III — Awaiting ORDAQA forward</p>
                         <p className="text-sm mt-1">
-                          {inspectionSkipsRqaPart2AndPart4(inspection)
-                            ? 'Part I marked DGAQA (ORDAQA) involvement as Yes (R&QA No). After Part I approval the IR is auto-forwarded to ORDAQA for Section 23.'
-                            : (
-                              <>
-                                Part I marked DGAQA (ORDAQA) involvement as Yes. QA Head must enable{' '}
-                                <strong>Forward to ORDAQA</strong> in Part II before Section 23 can be completed.
-                              </>
-                            )}
+                          Part I marked DGAQA (ORDAQA) involvement as Yes (R&amp;QA No). After Part I
+                          approval the IR is auto-forwarded to ORDAQA for Section 23.
                         </p>
                       </div>
                     );
                   }
-                  if (inspection.qa_approver_id) {
+                  if (inspection.qa_approver_id || jointInspectionRequestedInPart1(inspection)) {
                     return (
                       <div className="text-center py-8 text-muted-foreground">
                         <p className="font-medium">Part III — Not Applicable</p>
-                        <p className="text-sm mt-1">This IR was not forwarded to ORDAQA for joint inspection</p>
+                        <p className="text-sm mt-1">
+                          Forward to ORDAQA was not selected in Part II. Assigned R&amp;QA Inspector
+                          can fill Part IV.
+                        </p>
                       </div>
                     );
                   }
@@ -3793,7 +3793,7 @@ export default function InspectionDetailPage() {
                       <p className="font-medium">Complete Part III first</p>
                       <p className="text-sm mt-1">
                         This IR was forwarded to ORDAQA. ORDAQA Head must complete Part III Section 23
-                        (assignee) before Part IV can be filled.
+                        (assignee) before the assigned R&amp;QA Inspector can fill Part IV.
                       </p>
                     </div>
                   );
@@ -3886,9 +3886,8 @@ export default function InspectionDetailPage() {
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Part V — Not Applicable</p>
                       <p className="text-sm mt-1">
-                        {inspectionSkipsPart2Part3(inspection)
-                          ? 'Part I DGAQA (ORDAQA) involvement is No. QA Head can enable Forward to ORDAQA in Part II if Part V is required.'
-                          : 'Part I DGAQA (ORDAQA) was not involved — ORDAQA Part V does not apply'}
+                        This IR was not forwarded to ORDAQA. Assigned R&amp;QA Inspector fills Part IV;
+                        Part V applies only if QA Head enables Forward to ORDAQA in Part II.
                       </p>
                     </div>
                   );

@@ -828,17 +828,21 @@ export async function POST(
             userId
           );
           const reqApprId = ir.request_approver_id != null ? Number(ir.request_approver_id) : null;
-          await notifyReturnedToDesignerByQaHead(
-            parseInt(id, 10),
-            ir.request_number,
-            ir.initiator_id,
-            reqApprId,
-            effectiveNominatedId > 0 ? effectiveNominatedId : null,
-            comments,
-            actorName,
-            userId,
-            returnStakeholders
-          );
+          try {
+            await notifyReturnedToDesignerByQaHead(
+              parseInt(id, 10),
+              ir.request_number,
+              ir.initiator_id,
+              reqApprId,
+              effectiveNominatedId > 0 ? effectiveNominatedId : null,
+              comments,
+              actorName,
+              userId,
+              [...returnStakeholders, ir.part1_approved_by]
+            );
+          } catch (e) {
+            console.error('QA Head return-to-designer notifications:', e);
+          }
           return NextResponse.json({
             message: 'IR returned to designer. Initiator may edit Part I and resubmit to Request Approver.',
           });

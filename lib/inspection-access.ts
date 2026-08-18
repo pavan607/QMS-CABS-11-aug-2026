@@ -51,19 +51,28 @@ export function sqlPart1ApproverQueueCondition(irAlias: string): string {
 
 /**
  * Visibility for employee 1021 (Part I Approver):
- * - All IRs that have reached Part I approval or later (pending_part1_approval → closed)
+ * - IRs that have reached Part I approval or later (including rejected / returned after Part I)
  * - Plus IRs they created or are nominated on (field 21), even if still pending Request Approver
- * Unforwarded IRs (pending_request_approval / draft / returned) from other teams stay hidden.
+ * Unforwarded IRs (pending_request_approval / draft / returned before Part I) from other teams stay hidden.
  */
 export function sqlPart1ApproverVisibleCondition(
   irAlias: string,
   userIdPlaceholder: string
 ): string {
-  const reachedPart1OrLater = `${irAlias}.status NOT IN (
-    'draft', 'pending', 'pending_request_approval', 'returned_to_designer'
+  const stillBeforePart1 = `${irAlias}.status IN (
+    'draft', 'pending', 'pending_request_approval'
+  )`;
+  const returnedBeforePart1 = `(
+    ${irAlias}.status = 'returned_to_designer'
+    AND ${irAlias}.part1_approved_by IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM inspection_activities a
+      WHERE a.inspection_request_id = ${irAlias}.id
+        AND a.activity_type = 'part1_approved'
+    )
   )`;
   return `(
-    ${reachedPart1OrLater}
+    NOT (${stillBeforePart1} OR ${returnedBeforePart1})
     OR ${irAlias}.initiator_id = ${userIdPlaceholder}
     OR ${irAlias}.nominated_request_approver_id = ${userIdPlaceholder}
     OR ${irAlias}.request_approver_id = ${userIdPlaceholder}
@@ -106,6 +115,7 @@ export type InspectionRequestScopeRow = {
   final_qa_approver_id?: number | null;
   nominated_request_approver_id?: number | null;
   request_approver_id?: number | null;
+  part1_approved_by?: number | null;
   part2_data?: unknown;
   part3_data?: unknown;
   part3_completed_by?: number | null;
@@ -392,16 +402,28 @@ export async function userCanAccessInspectionRequest(
   if (!Number.isFinite(userId) || userId < 1) return false;
   if (userHasGlobalInspectionAccess(role, employeeId)) return true;
 
-  // Part I Approver (1021): see IRs from Part I queue onward; hide unforwarded others.
+  // Part I Approver (1021): see IRs from Part I queue onward, including rejected /
+  // returned-to-designer after they have already forwarded Part I.
   if (employeeIsPart1Approver(employeeId)) {
     const status = String(ir.status ?? '');
-    const beforePart1Forward = [
-      'draft',
-      'pending',
-      'pending_request_approval',
-      'returned_to_designer',
-    ].includes(status);
-    if (!beforePart1Forward) return true;
+    const part1Approved =
+      ir.part1_approved_by != null && Number(ir.part1_approved_by) > 0;
+    if (part1Approved) return true;
+    const beforePart1Forward = ['draft', 'pending', 'pending_request_approval'].includes(status);
+    if (status === 'returned_to_designer' && !part1Approved) {
+      const irId = ir.id != null ? Number(ir.id) : NaN;
+      if (Number.isFinite(irId) && irId > 0) {
+        const acted = await query(
+          `SELECT 1 FROM inspection_activities
+           WHERE inspection_request_id = $1 AND activity_type = 'part1_approved'
+           LIMIT 1`,
+          [irId]
+        );
+        if (acted.rows.length > 0) return true;
+      }
+    } else if (!beforePart1Forward && status !== 'returned_to_designer') {
+      return true;
+    }
     if (ir.initiator_id != null && Number(ir.initiator_id) === userId) return true;
     if (
       ir.nominated_request_approver_id != null &&

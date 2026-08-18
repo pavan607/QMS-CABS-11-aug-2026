@@ -1312,14 +1312,14 @@ export async function collectIrStakeholderIds(
     addPart2InvolvedUserIds(add, row.part2_data);
   }
 
-  // Forward Request (Part I Approver) by known employee id
+  // Forward Request (Part I Approver) by known employee id — always include 1021
   try {
     const part1Emp = normalizeEmployeeId(PART1_APPROVER_EMPLOYEE_ID);
     if (part1Emp) {
       const p1 = await pool.query(
         `SELECT id FROM users
-         WHERE COALESCE(status, 'active') = 'active'
-           AND LOWER(REPLACE(TRIM(COALESCE(employee_id, '')), ' ', '')) = LOWER($1)
+         WHERE UPPER(TRIM(COALESCE(employee_id, ''))) = $1
+         ORDER BY CASE WHEN COALESCE(status, 'active') = 'active' THEN 0 ELSE 1 END, id
          LIMIT 1`,
         [part1Emp]
       );

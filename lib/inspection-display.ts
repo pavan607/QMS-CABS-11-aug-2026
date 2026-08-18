@@ -1071,15 +1071,16 @@ export function ordaqaHeadReforwardActionRequired(ir: {
 }
 
 /**
- * True when ORDAQA path applies (Part III + Part V) —
- * Field 4 DGAQA involvement Yes (DGAQA = ORDAQA) and/or QA Head forwarded to ORDAQA in Part II.
+ * True when ORDAQA path applies (Part III + Part V).
+ * Only after QA Head forwards in Part II — or DGAQA-only auto-forward after Part I
+ * (that path sets `forwarded_to_ordaqa`). Part I DGAQA Yes alone does not require III/V.
  */
 export function inspectionRequiresOrdqaPart5(ir: {
   so_involves_dgaqa?: unknown;
   confirmations?: unknown;
   forwarded_to_ordaqa?: unknown;
 }): boolean {
-  return dgaqaInvolvedInPart1(ir) || isForwardedToOrdqa(ir);
+  return isForwardedToOrdqa(ir);
 }
 
 /** Team Head – QA final sign-off (Approve & Close) recorded. */
@@ -1442,7 +1443,10 @@ export function getPrimaryInspectorId(ir: {
   return null;
 }
 
-/** ORDAQA path: Part IV only after Part III Section 23 (assignee set). */
+/**
+ * ORDAQA path: Part IV waits for Part III Section 23 only when forwarded to ORDAQA.
+ * If Forward to ORDAQA is not selected, the assigned R&QA inspector fills Part IV.
+ */
 export function part3RequiredBeforePart4(ir: {
   forwarded_to_ordaqa?: unknown;
   so_involves_dgaqa?: unknown;
@@ -1450,7 +1454,7 @@ export function part3RequiredBeforePart4(ir: {
   confirmations?: unknown;
 }): boolean {
   if (inspectionSkipsRqaPart2AndPart4(ir)) return false;
-  return dgaqaInvolvedInPart1(ir) || isForwardedToOrdqa(ir);
+  return isForwardedToOrdqa(ir);
 }
 
 export function part3CompleteForOrdqaWorkflow(ir: {
@@ -1460,9 +1464,11 @@ export function part3CompleteForOrdqaWorkflow(ir: {
   return part3Section23HasSavedData(ir);
 }
 
-/** Part IV blocked until ORDAQA Part III is done (non-ORDAQA IRs are never blocked). */
+/** Part IV blocked until ORDAQA Part III is done (IRs not forwarded to ORDAQA are never blocked). */
 export function part4BlockedByPart3(ir: {
   forwarded_to_ordaqa?: unknown;
+  so_involves_dgaqa?: unknown;
+  so_involves_rqa?: unknown;
   confirmations?: unknown;
   part3_data?: unknown;
   ordaqa_inspector_id?: number | null;
@@ -2026,16 +2032,6 @@ export function resolveInspectionCustody(ir: {
       role: 'R&QA Inspector',
       name: inspectors || null,
       action: 'Revise Part IV after Team Head rejection',
-    };
-  }
-
-  // Joint inspection / DGAQA path but not yet forwarded — still with QA Head / Team Head path
-  if (needsOrdqa && !forwarded && needsRqa && hasInspectors && !section23) {
-    return {
-      stage: 'Part II',
-      role: teamHead ? 'Team Head – QA / QA Head' : 'QA Head',
-      name: firstNonEmpty(teamHead, qaHead),
-      action: 'Forward to ORDAQA for Joint Inspection when ready',
     };
   }
 
