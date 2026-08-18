@@ -9,6 +9,7 @@ import {
 import { isEligibleRqaTeamHead, R_QA_DEPARTMENT, TEAM_HEAD_DESIGNATION } from '@/lib/rqa-users';
 import {
   sqlInspectorIdsContainsUserId,
+  sqlInspectorSendBackVisibleCondition,
   sqlPart1JointInspectionSkippedCondition,
   sqlLegacyOpenRqaPart4Condition,
 } from '@/lib/inspection-scope-sql';
@@ -92,6 +93,7 @@ export async function resolvePart1ApproverUser(): Promise<{
 export { collectInspectorIds, parseInspectorIds } from '@/lib/inspector-ids';
 
 export type InspectionRequestScopeRow = {
+  id?: number | null;
   status?: string | null;
   initiator_id?: number | null;
   inspector_id?: number | null;
@@ -100,9 +102,11 @@ export type InspectionRequestScopeRow = {
   forwarded_to_ordaqa?: unknown;
   ordaqa_inspector_id?: number | null;
   nominated_team_head_id?: number | null;
+  qa_approver_id?: number | null;
   final_qa_approver_id?: number | null;
   nominated_request_approver_id?: number | null;
   request_approver_id?: number | null;
+  part2_data?: unknown;
   part3_data?: unknown;
   part3_completed_by?: number | null;
   part4_data?: unknown;
@@ -159,25 +163,42 @@ export function irVisibleToOrdaqaHead(ir: {
   return s23 === 'true' || s23 === 't' || s23 === '1' || s23 === 'yes';
 }
 
-/** IRs not yet Part I–approved — hidden from QA Head. Returned-to-designer stays visible (QA Head may have returned it). */
+/**
+ * QA Head list/detail:
+ * - Hide first-cycle drafts and Part I queues (Request Approver / 1021 still acting).
+ * - Keep IRs that already entered the QA pipeline (qa_approver_id set) even if
+ *   Team Head sent them back and they are re-queued for Part I.
+ */
 export function irVisibleToQaHead(ir: {
   status?: string | null;
   request_approver_id?: number | null;
+  qa_approver_id?: number | null;
 }): boolean {
   const status = String(ir.status ?? '');
-  if (['draft', 'pending', 'pending_request_approval', 'pending_part1_approval'].includes(status)) {
-    return false;
+  if (['draft', 'pending'].includes(status)) return false;
+
+  const touchedQaPipeline =
+    ir.qa_approver_id != null && Number(ir.qa_approver_id) > 0;
+  if (['pending_request_approval', 'pending_part1_approval'].includes(status)) {
+    return touchedQaPipeline;
   }
+
   const reqApprId =
     ir.request_approver_id != null ? Number(ir.request_approver_id) : NaN;
   return Number.isFinite(reqApprId) && reqApprId > 0;
 }
 
-/** SQL fragment: only IRs after Part I approval (QA pipeline), including returned-to-designer. */
+/** SQL fragment: QA pipeline IRs, plus previously processed IRs re-queued after send-back. */
 export function sqlQaHeadInspectionVisibleCondition(irAlias: string): string {
   return `(
-    ${irAlias}.request_approver_id IS NOT NULL
-    AND ${irAlias}.status NOT IN ('draft', 'pending', 'pending_request_approval', 'pending_part1_approval')
+    (
+      ${irAlias}.request_approver_id IS NOT NULL
+      AND ${irAlias}.status NOT IN ('draft', 'pending', 'pending_request_approval', 'pending_part1_approval')
+    )
+    OR (
+      ${irAlias}.qa_approver_id IS NOT NULL
+      AND ${irAlias}.status IN ('pending_request_approval', 'pending_part1_approval', 'returned_to_designer')
+    )
   )`;
 }
 
@@ -200,7 +221,15 @@ export function userIsNominatedTeamHead(ir: InspectionRequestScopeRow, userId: n
 export function userIsAssignedInspector(ir: InspectionRequestScopeRow, userId: number): boolean {
   if (ir.inspector_id != null && Number(ir.inspector_id) === userId) return true;
   if (ir.ordaqa_inspector_id != null && Number(ir.ordaqa_inspector_id) === userId) return true;
-  return parseInspectorIds(ir.inspector_ids).includes(userId);
+  return collectInspectorIds(ir).includes(userId);
+}
+
+/** Inspector who sent the IR back (or was assigned when it was sent back) — view only until re-assigned. */
+export function userWasInspectorAfterSendBack(ir: InspectionRequestScopeRow, userId: number): boolean {
+  const p2 = parsePart3ScopeData(ir.part2_data);
+  const sentBy = Number(p2.inspector_send_back_by);
+  if (Number.isFinite(sentBy) && sentBy === userId) return true;
+  return parseInspectorIds(p2.previous_inspector_ids).includes(userId);
 }
 
 /** Roles with organisation-wide inspection visibility (no row filter). */
@@ -309,6 +338,10 @@ export function sqlInspectionScopeCondition(
         ${irAlias}.nominated_team_head_id = ${userIdPlaceholder}
         OR ${irAlias}.final_qa_approver_id = ${userIdPlaceholder}
         OR (
+          ${irAlias}.qa_approver_id = ${userIdPlaceholder}
+          AND ${irAlias}.status = 'returned_to_designer'
+        )
+        OR (
           ${sqlLegacyOpenRqaPart4Condition(irAlias)}
           AND ${irAlias}.status IN (${skipStatuses})
           AND EXISTS (
@@ -327,6 +360,7 @@ export function sqlInspectionScopeCondition(
         ${irAlias}.ordaqa_inspector_id = ${userIdPlaceholder}
         OR ${irAlias}.inspector_id = ${userIdPlaceholder}
         OR ${sqlInspectorIdsContainsUserId(irAlias, userIdPlaceholder)}
+        OR ${sqlInspectorSendBackVisibleCondition(irAlias, userIdPlaceholder)}
         OR (
           ${sqlLegacyOpenRqaPart4Condition(irAlias)}
           AND ${irAlias}.status IN ('request_approved', 'assigned', 'in_progress', 'inspection_completed', 'completed')
@@ -398,6 +432,14 @@ export async function userCanAccessInspectionRequest(
     if (ir.final_qa_approver_id != null && Number(ir.final_qa_approver_id) === userId) {
       return true;
     }
+    // After Team Head Send back, nomination is cleared; keep the IR visible while it is with the initiator.
+    if (
+      String(ir.status ?? '') === 'returned_to_designer' &&
+      ir.qa_approver_id != null &&
+      Number(ir.qa_approver_id) === userId
+    ) {
+      return true;
+    }
     if (
       inspectionUsesLegacyOpenRqaPart4(ir) &&
       (QA_APPROVER_SKIP_PATH_STATUSES as readonly string[]).includes(String(ir.status ?? ''))
@@ -408,6 +450,7 @@ export async function userCanAccessInspectionRequest(
 
   if (role === 'inspector') {
     if (userIsAssignedInspector(ir, userId)) return true;
+    if (userWasInspectorAfterSendBack(ir, userId)) return true;
     if (
       inspectionUsesLegacyOpenRqaPart4(ir) &&
       ['request_approved', 'assigned', 'in_progress', 'inspection_completed', 'completed'].includes(

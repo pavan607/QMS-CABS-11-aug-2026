@@ -14,6 +14,8 @@ import {
   notifyQaHeadsMemoReturnedFromOrdaqa,
   notifyInspectorsAssignedPart2,
   notifyInspectorsReassignedPart2,
+  notifyStakeholdersInspectorOutstationRejected,
+  notifyStakeholdersInspectorOutstationSendBack,
   notifyPart2InspectorsPart3Completed,
   notifyStakeholdersOrdaqaDelegatedToRqa,
   notifyStakeholdersPart4Saved,
@@ -25,6 +27,7 @@ import {
   notifyOrdaqaAssigneePart5SentBack,
   notifyOrdaqaAssigneePart5Approved,
   notifyInitiatorIrMilestone,
+  notifyIrStakeholders,
   notifyInspectionRejected,
   notifyInspectionCompleted,
   notifyInspectionClosed,
@@ -50,12 +53,19 @@ import {
   canUserTeamHeadEditPart4,
   inspectionReportsReadyForTeamHead,
   inspectionSkipsPart2Part3,
+  inspectionSkipsRqaPart2AndPart4,
+  dgaqaInvolvedInPart1,
   inspectionUsesLegacyOpenRqaPart4,
   isForwardedToOrdqa,
   ordqaPart5Approved,
   ordqaPart5Completed,
   ordqaPart5Submitted,
   part3Section23EditableStatus,
+  part2OutstationDetailsIncomplete,
+  part2OutstationDetailsSubmitted,
+  canUserInspectorOutstationRejectOrSendBack,
+  part2OutstationEditLockedByPart3,
+  inspectionPart4Saved,
   part4ApprovedByTeamHead,
   part4BlockedByPart3,
   part4PendingTeamHeadApproval,
@@ -75,18 +85,72 @@ async function notifyInitiatorRequestApproverSendBack(
   requestId: number,
   requestNumber: string,
   initiatorId: number,
-  comment: string
+  comment: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
   const preview =
     comment.length > 200 ? `${comment.slice(0, 197)}…` : comment;
-  await createNotification({
-    userId: initiatorId,
-    title: 'Request sent back for corrections',
-    message: `Inspection request ${requestNumber} was sent back by your Request Approver. ${preview}`,
-    type: 'returned_to_designer',
-    entityType: 'inspection_request',
-    entityId: requestId,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Request sent back for corrections',
+      message: `Inspection request ${requestNumber} was sent back by Request Approver. ${preview}`,
+      type: 'returned_to_designer',
+    },
+    { excludeUserId, extraUserIds: [initiatorId, ...extraUserIds] }
+  );
+}
+
+/** User ids on the IR row before a send-back/reject clears assignees. */
+function snapshotIrStakeholderIds(ir: {
+  initiator_id?: number | null;
+  request_approver_id?: number | null;
+  nominated_request_approver_id?: number | null;
+  nominated_team_head_id?: number | null;
+  qa_approver_id?: number | null;
+  part1_approved_by?: number | null;
+  inspector_id?: number | null;
+  inspector_ids?: unknown;
+  ordaqa_inspector_id?: number | null;
+  ordaqa_approver_id?: number | null;
+  final_qa_approver_id?: number | null;
+  approver_id?: number | null;
+  part2_data?: unknown;
+  part3_completed_by?: number | null;
+  part4_completed_by?: number | null;
+}): number[] {
+  const ids = new Set<number>();
+  const add = (v: unknown) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) ids.add(n);
+  };
+  add(ir.initiator_id);
+  add(ir.request_approver_id);
+  add(ir.nominated_request_approver_id);
+  add(ir.nominated_team_head_id);
+  add(ir.qa_approver_id);
+  add(ir.part1_approved_by);
+  add(ir.inspector_id);
+  add(ir.ordaqa_inspector_id);
+  add(ir.ordaqa_approver_id);
+  add(ir.final_qa_approver_id);
+  add(ir.approver_id);
+  add(ir.part3_completed_by);
+  add(ir.part4_completed_by);
+  for (const id of collectInspectorIds(ir)) add(id);
+  const p2 = parsePart2Data(ir.part2_data);
+  add(p2.inspector_send_back_by);
+  add(p2.inspector_rejected_by);
+  for (const id of parseInspectorIds(p2.previous_inspector_ids)) add(id);
+  if (Array.isArray(p2.return_history)) {
+    for (const entry of p2.return_history) {
+      if (entry && typeof entry === 'object') {
+        add((entry as Record<string, unknown>).by_user_id);
+      }
+    }
+  }
+  return Array.from(ids);
 }
 
 function parsePart3Data(ir: { part3_data?: unknown }): Record<string, unknown> {
@@ -285,7 +349,15 @@ export async function POST(
     }
     const ir = existing.rows[0];
 
-    const canAccess = await userCanAccessInspectionRequest(userRole, userId, ir, employeeId, designation);
+    const assignedToActor =
+      collectInspectorIds(ir).includes(userId) ||
+      (ir.inspector_id != null && Number(ir.inspector_id) === userId) ||
+      (ir.ordaqa_inspector_id != null && Number(ir.ordaqa_inspector_id) === userId) ||
+      (ir.nominated_team_head_id != null && Number(ir.nominated_team_head_id) === userId) ||
+      (ir.qa_approver_id != null && Number(ir.qa_approver_id) === userId);
+    const canAccess =
+      assignedToActor ||
+      (await userCanAccessInspectionRequest(userRole, userId, ir, employeeId, designation));
     if (!canAccess) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -447,6 +519,17 @@ export async function POST(
            WHERE id = $1`,
           [id, combinedComment, userId]
         );
+        // DGAQA-only (no R&QA): skip Part II — auto-forward to ORDAQA for Part III
+        const dgaqaOnly =
+          dgaqaInvolvedInPart1(ir) && inspectionSkipsRqaPart2AndPart4(ir);
+        if (dgaqaOnly) {
+          await query(
+            `UPDATE inspection_requests
+             SET forwarded_to_ordaqa = TRUE, updated_at = NOW()
+             WHERE id = $1`,
+            [id]
+          );
+        }
         await logActivity(
           id,
           'part1_approved',
@@ -458,17 +541,39 @@ export async function POST(
         try {
           const approvedByName =
             (session.user as { name?: string })?.name?.trim() || `Employee ${PART1_APPROVER_EMPLOYEE_ID}`;
-          await notifyQaHeadsAfterRequestApproverForward(
-            parseInt(id, 10),
-            ir.request_number,
-            approvedByName,
-            ir.initiator_id,
-            trimmedPart1Comment || priorComment || null
-          );
+          if (dgaqaOnly) {
+            await notifyOrdaqaHeadsForwardedToOrdaqa(
+              parseInt(id, 10),
+              ir.request_number,
+              ir.initiator_id
+            );
+          } else if (!inspectionSkipsRqaPart2AndPart4(ir)) {
+            await notifyQaHeadsAfterRequestApproverForward(
+              parseInt(id, 10),
+              ir.request_number,
+              approvedByName,
+              ir.initiator_id,
+              trimmedPart1Comment || priorComment || null
+            );
+          } else {
+            await notifyIrStakeholders(
+              parseInt(id, 10),
+              {
+                title: 'Part I approved',
+                message: `Inspection request ${ir.request_number} was approved by ${approvedByName}.`,
+                type: 'request_approved',
+              },
+              { extraUserIds: snapshotIrStakeholderIds(ir) }
+            );
+          }
         } catch (e) {
-          console.error('QA Head Part I approval notification:', e);
+          console.error('QA Head / ORDAQA Part I approval notification:', e);
         }
-        return NextResponse.json({ message: 'Part I approved; forwarded to QA Head' });
+        return NextResponse.json({
+          message: dgaqaOnly
+            ? 'Part I approved; forwarded to ORDAQA (R&QA Part II/IV not required)'
+            : 'Part I approved; forwarded to QA Head',
+        });
       }
 
       case 'request_reject': {
@@ -485,7 +590,7 @@ export async function POST(
           if (deny) return deny;
         }
         const { reason } = body;
-        const rejectLabel = isPart1Queue ? 'Part I Approver' : 'Request Approver';
+        const rejectLabel = isPart1Queue ? 'Forward Request' : 'Part I Approver';
         await query(
           `UPDATE inspection_requests 
            SET status = 'rejected', 
@@ -501,7 +606,9 @@ export async function POST(
             String(ir.request_number),
             ir.initiator_id,
             undefined,
-            reason || `Rejected by ${rejectLabel}`
+            reason || `Rejected by ${rejectLabel}`,
+            userId,
+            snapshotIrStakeholderIds(ir)
           );
         } catch (e) {
           console.error('Initiator request-reject notification:', e);
@@ -514,7 +621,7 @@ export async function POST(
         const isRaQueue = ir.status === 'pending_request_approval' || ir.status === 'pending';
         if (!isRaQueue) {
           return NextResponse.json(
-            { error: 'Send back is not available for Part I Approver' },
+            { error: 'Send back is not available on the Forward Request queue' },
             { status: 403 }
           );
         }
@@ -543,7 +650,14 @@ export async function POST(
           `Request Approver sent back for Part I: ${trimmed.slice(0, 200)}${trimmed.length > 200 ? '…' : ''}`,
           userId
         );
-        await notifyInitiatorRequestApproverSendBack(parseInt(id, 10), ir.request_number, ir.initiator_id, trimmed);
+        await notifyInitiatorRequestApproverSendBack(
+          parseInt(id, 10),
+          ir.request_number,
+          ir.initiator_id,
+          trimmed,
+          userId,
+          snapshotIrStakeholderIds(ir)
+        );
         return NextResponse.json({ message: 'Request sent back to initiator for corrections' });
       }
 
@@ -551,9 +665,13 @@ export async function POST(
         if (userRole !== 'qa_head' && userRole !== 'administrator') {
           return NextResponse.json({ error: 'Only QA Head can complete Part II Step 1' }, { status: 403 });
         }
-        const skipsOrdqaPath = inspectionSkipsPart2Part3(ir);
+        if (inspectionSkipsRqaPart2AndPart4(ir)) {
+          return NextResponse.json(
+            { error: 'Part II is not used when Part I R&QA involvement is No' },
+            { status: 400 }
+          );
+        }
         const memoAwaitingQaHead = (() => {
-          if (skipsOrdqaPath) return false;
           if (isForwardedToOrdqa(ir)) return false;
           const p3 = parsePart3Data(ir);
           return String(p3.memo_returned ?? '').trim().toLowerCase() === 'yes';
@@ -585,8 +703,8 @@ export async function POST(
           );
         }
         const { nominated_team_head_id: bodyNominatedId, forward_to_ordaqa: fwdOrdaqaRaw, part2_notes: p2notes, part2_data: p2data } = body;
-        // 19(f) No — Team Head selection still applies, but never forward to ORDAQA
-        const fwdOrdaqa = skipsOrdqaPath ? false : !!fwdOrdaqaRaw;
+        // QA Head may forward to ORDAQA even when Part I DGAQA involvement is No
+        const fwdOrdaqa = !!fwdOrdaqaRaw;
         const incomingP2Early =
           p2data && typeof p2data === 'object' ? (p2data as Record<string, unknown>) : parsePart2Data(p2data);
         const wantsReturnEarly = incomingP2Early.return_to_designer === 'yes';
@@ -687,6 +805,7 @@ export async function POST(
             ],
           };
           const actorName = (session.user as { name?: string })?.name || 'QA Head';
+          const returnStakeholders = snapshotIrStakeholderIds(ir);
           await query(
             `UPDATE inspection_requests
              SET status = 'returned_to_designer',
@@ -716,7 +835,9 @@ export async function POST(
             reqApprId,
             effectiveNominatedId > 0 ? effectiveNominatedId : null,
             comments,
-            actorName
+            actorName,
+            userId,
+            returnStakeholders
           );
           return NextResponse.json({
             message: 'IR returned to designer. Initiator may edit Part I and resubmit to Request Approver.',
@@ -828,6 +949,12 @@ export async function POST(
       }
 
       case 'assign_inspector': {
+        if (inspectionSkipsRqaPart2AndPart4(ir)) {
+          return NextResponse.json(
+            { error: 'Part II is not used when Part I R&QA involvement is No' },
+            { status: 400 }
+          );
+        }
         const isNominatedTeamHead = isNominatedTeamHeadActor(ir, userId);
         if (!isNominatedTeamHead && userRole !== 'qa_head' && userRole !== 'administrator') {
           return NextResponse.json({ error: 'Only the nominated Team Head - QA can assign inspectors' }, { status: 403 });
@@ -850,6 +977,14 @@ export async function POST(
             { status: 400 }
           );
         }
+        if (alreadyAssigned && part2OutstationDetailsSubmitted(ir)) {
+          return NextResponse.json(
+            {
+              error: 'Inspector assignment cannot be changed after Outstation details are submitted',
+            },
+            { status: 400 }
+          );
+        }
         const { inspector_ids: inspIds, inspector_id: singleInspId } = body;
         const rawList = inspIds || (singleInspId ? [singleInspId] : []);
         const inspectorIds = [
@@ -867,17 +1002,7 @@ export async function POST(
           if (!incoming) {
             return 'Part II details are required';
           }
-          if (!incoming.outstation_inspection) return null;
-          const emailSent = String(incoming.email_sent || '').trim().toLowerCase();
-          if (emailSent !== 'yes' && emailSent !== 'no') {
-            return 'Outstation Inspection: Email Sent is required (Yes or No)';
-          }
-          if (!String(incoming.email_sent_by || '').trim()) {
-            return 'Outstation Inspection: Name & Sign is required';
-          }
-          if (!String(incoming.email_sent_date || '').trim()) {
-            return 'Outstation Inspection: Date & Time is required';
-          }
+          // Outstation Email Sent / Name & Sign / Date & Time are filled later by R&QA Inspector
           return null;
         };
 
@@ -902,9 +1027,10 @@ export async function POST(
               ...existingP2,
               third_party_agency: String(incomingP2.third_party_agency || ''),
               outstation_inspection: outstationInspection,
-              email_sent: outstationInspection ? String(incomingP2.email_sent || 'no') : null,
-              email_sent_by: outstationInspection ? String(incomingP2.email_sent_by || '') : null,
-              email_sent_date: outstationInspection ? String(incomingP2.email_sent_date || '') : null,
+              // Keep inspector-filled email fields when outstation stays on; clear when off
+              email_sent: outstationInspection ? (existingP2.email_sent ?? null) : null,
+              email_sent_by: outstationInspection ? (existingP2.email_sent_by ?? null) : null,
+              email_sent_date: outstationInspection ? (existingP2.email_sent_date ?? null) : null,
               team_head_comments: String(incomingP2.team_head_comments || '').trim(),
             };
             await query(
@@ -943,9 +1069,10 @@ export async function POST(
               ...existingP2,
               third_party_agency: String(incomingP2.third_party_agency || ''),
               outstation_inspection: outstationInspection,
-              email_sent: outstationInspection ? String(incomingP2.email_sent || 'no') : null,
-              email_sent_by: outstationInspection ? String(incomingP2.email_sent_by || '') : null,
-              email_sent_date: outstationInspection ? String(incomingP2.email_sent_date || '') : null,
+              // Email fields are filled later by assigned R&QA Inspector
+              email_sent: outstationInspection ? (existingP2.email_sent ?? null) : null,
+              email_sent_by: outstationInspection ? (existingP2.email_sent_by ?? null) : null,
+              email_sent_date: outstationInspection ? (existingP2.email_sent_date ?? null) : null,
               team_head_comments: String(incomingP2.team_head_comments || '').trim(),
             };
           }
@@ -967,6 +1094,10 @@ export async function POST(
         try {
           const teamHeadName =
             (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
+          const outstationOn = Boolean(
+            incomingP2ForValidate?.outstation_inspection ??
+              parsePart2Data(ir.part2_data).outstation_inspection
+          );
           if (alreadyAssigned) {
             await notifyInspectorsReassignedPart2(
               parseInt(id, 10),
@@ -974,7 +1105,8 @@ export async function POST(
               previousInspectorIds,
               inspectorIds,
               ir.initiator_id,
-              teamHeadName
+              teamHeadName,
+              outstationOn
             );
           } else {
             await notifyInspectorsAssignedPart2(
@@ -982,7 +1114,8 @@ export async function POST(
               String(ir.request_number),
               inspectorIds,
               ir.initiator_id,
-              teamHeadName
+              teamHeadName,
+              outstationOn
             );
           }
         } catch (e) {
@@ -996,9 +1129,9 @@ export async function POST(
       }
 
       case 'save_part2_inspector_details': {
-        if (inspectionSkipsPart2Part3(ir)) {
+        if (inspectionSkipsRqaPart2AndPart4(ir)) {
           return NextResponse.json(
-            { error: 'Part II is not used when Part I 19(f) joint inspection is No' },
+            { error: 'Part II is not used when Part I R&QA involvement is No' },
             { status: 400 }
           );
         }
@@ -1007,6 +1140,15 @@ export async function POST(
         }
         if (!['assigned', 'in_progress'].includes(ir.status)) {
           return NextResponse.json({ error: 'Inspector Part II details can only be updated after assignment' }, { status: 400 });
+        }
+        if (part2OutstationEditLockedByPart3(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Outstation details cannot be edited after ORDAQA Head has submitted Part III (Section 23)',
+            },
+            { status: 400 }
+          );
         }
         if (userRole === 'inspector') {
           const ids = parseInspectorIds(ir.inspector_ids);
@@ -1021,14 +1163,37 @@ export async function POST(
             ? (body.part2_data as Record<string, unknown>)
             : parsePart2Data(body.part2_data);
         const existingP2 = parsePart2Data(ir.part2_data);
-        const outstationInspection = !!incomingP2.outstation_inspection;
+        if (!existingP2.outstation_inspection) {
+          return NextResponse.json(
+            { error: 'Outstation Inspection is not enabled by Team Head – QA' },
+            { status: 400 }
+          );
+        }
+        const emailSent = String(incomingP2.email_sent || '').trim().toLowerCase();
+        if (emailSent !== 'yes' && emailSent !== 'no') {
+          return NextResponse.json(
+            { error: 'Outstation Inspection: Email Sent is required (Yes or No)' },
+            { status: 400 }
+          );
+        }
+        if (!String(incomingP2.email_sent_by || '').trim()) {
+          return NextResponse.json(
+            { error: 'Outstation Inspection: Name & Sign is required' },
+            { status: 400 }
+          );
+        }
+        if (!String(incomingP2.email_sent_date || '').trim()) {
+          return NextResponse.json(
+            { error: 'Outstation Inspection: Date & Time is required' },
+            { status: 400 }
+          );
+        }
         const mergedP2 = {
           ...existingP2,
-          third_party_agency: String(incomingP2.third_party_agency || ''),
-          outstation_inspection: outstationInspection,
-          email_sent: outstationInspection ? String(incomingP2.email_sent || 'no') : null,
-          email_sent_by: outstationInspection ? String(incomingP2.email_sent_by || '') : null,
-          email_sent_date: outstationInspection ? String(incomingP2.email_sent_date || '') : null,
+          outstation_inspection: true,
+          email_sent: emailSent,
+          email_sent_by: String(incomingP2.email_sent_by || '').trim(),
+          email_sent_date: String(incomingP2.email_sent_date || '').trim(),
         };
 
         await query(
@@ -1042,16 +1207,183 @@ export async function POST(
         await logActivity(
           id,
           'part2_inspector_details_updated',
-          'Part II outstation/third-party details updated by assigned inspector',
+          'Part II outstation email details updated by assigned R&QA inspector',
           userId
         );
-        return NextResponse.json({ message: 'Inspector Part II details updated' });
+        return NextResponse.json({ message: 'Outstation details saved' });
+      }
+
+      case 'inspector_reject_ir': {
+        if (!canUserInspectorOutstationRejectOrSendBack(ir, userId, userRole)) {
+          return NextResponse.json(
+            {
+              error:
+                'Only an assigned R&QA inspector can reject before Part IV is submitted for Team Head approval',
+            },
+            { status: 403 }
+          );
+        }
+        const rejectComment =
+          typeof (body as { comments?: string; reason?: string }).comments === 'string'
+            ? (body as { comments?: string }).comments!.trim()
+            : typeof (body as { reason?: string }).reason === 'string'
+              ? (body as { reason?: string }).reason!.trim()
+              : '';
+        if (!rejectComment) {
+          return NextResponse.json({ error: 'Comment is required to reject' }, { status: 400 });
+        }
+
+        const existingP2RejectInsp = parsePart2Data(ir.part2_data);
+        const prevRejectHist = Array.isArray(existingP2RejectInsp.return_history)
+          ? (existingP2RejectInsp.return_history as unknown[])
+          : [];
+        const mergedP2RejectInsp = {
+          ...existingP2RejectInsp,
+          inspector_reject_comment: rejectComment,
+          inspector_rejected_at: new Date().toISOString(),
+          inspector_rejected_by: userId,
+          return_history: [
+            ...prevRejectHist,
+            {
+              at: new Date().toISOString(),
+              by_user_id: userId,
+              role: 'inspector_reject_ir',
+              comments: rejectComment,
+              prior_status: ir.status,
+            },
+          ],
+        };
+
+        await query(
+          `UPDATE inspection_requests
+           SET status = 'rejected',
+               rejection_reason = $2,
+               part2_data = $3,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [id, rejectComment, JSON.stringify(mergedP2RejectInsp)]
+        );
+        await logActivity(
+          id,
+          'rejected',
+          `IR rejected by R&QA Inspector: ${rejectComment.slice(0, 200)}${rejectComment.length > 200 ? '…' : ''}`,
+          userId
+        );
+
+        const inspectorActorName =
+          (session.user as { name?: string })?.name?.trim() || 'R&QA Inspector';
+        try {
+          await notifyStakeholdersInspectorOutstationRejected(
+            parseInt(id, 10),
+            String(ir.request_number),
+            inspectorActorName,
+            rejectComment,
+            userId,
+            snapshotIrStakeholderIds(ir)
+          );
+        } catch (e) {
+          console.error('Inspector reject notifications:', e);
+        }
+        return NextResponse.json({ message: 'Inspection request rejected' });
+      }
+
+      case 'inspector_send_back_to_team_head': {
+        if (!canUserInspectorOutstationRejectOrSendBack(ir, userId, userRole)) {
+          return NextResponse.json(
+            {
+              error:
+                'Only an assigned R&QA inspector can send back before Part IV is submitted for Team Head approval',
+            },
+            { status: 403 }
+          );
+        }
+        if (!ir.nominated_team_head_id) {
+          return NextResponse.json(
+            { error: 'No Team Head – QA is nominated on this IR' },
+            { status: 400 }
+          );
+        }
+        const sendBackComment =
+          typeof (body as { comments?: string }).comments === 'string'
+            ? (body as { comments?: string }).comments!.trim()
+            : '';
+        if (!sendBackComment) {
+          return NextResponse.json({ error: 'Comment is required to send back' }, { status: 400 });
+        }
+
+        const existingP2SendBack = parsePart2Data(ir.part2_data);
+        const prevSendHist = Array.isArray(existingP2SendBack.return_history)
+          ? (existingP2SendBack.return_history as unknown[])
+          : [];
+        const previousInspectorIds = [
+          ...new Set([
+            ...parseInspectorIds(existingP2SendBack.previous_inspector_ids),
+            ...collectInspectorIds(ir),
+          ]),
+        ];
+        const mergedP2SendBack = {
+          ...existingP2SendBack,
+          inspector_send_back_comment: sendBackComment,
+          inspector_send_back_at: new Date().toISOString(),
+          inspector_send_back_by: userId,
+          previous_inspector_ids: previousInspectorIds,
+          // Clear Outstation fill fields so Team Head / next assignee starts clean
+          email_sent: null,
+          email_sent_by: null,
+          email_sent_date: null,
+          return_history: [
+            ...prevSendHist,
+            {
+              at: new Date().toISOString(),
+              by_user_id: userId,
+              role: 'inspector_send_back_to_team_head',
+              comments: sendBackComment,
+              prior_status: ir.status,
+            },
+          ],
+        };
+
+        const sendBackActorName =
+          (session.user as { name?: string })?.name?.trim() || 'R&QA Inspector';
+        const sendBackStakeholders = snapshotIrStakeholderIds(ir);
+        await query(
+          `UPDATE inspection_requests
+           SET status = 'request_approved',
+               inspector_id = NULL,
+               inspector_ids = '[]',
+               part2_data = $2,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [id, JSON.stringify(mergedP2SendBack)]
+        );
+        await logActivity(
+          id,
+          'inspector_send_back_to_team_head',
+          `R&QA Inspector sent back to Team Head – QA: ${sendBackComment.slice(0, 200)}${sendBackComment.length > 200 ? '…' : ''}`,
+          userId
+        );
+
+        try {
+          await notifyStakeholdersInspectorOutstationSendBack(
+            parseInt(id, 10),
+            String(ir.request_number),
+            sendBackActorName,
+            sendBackComment,
+            userId,
+            sendBackStakeholders
+          );
+        } catch (e) {
+          console.error('Inspector send-back notifications:', e);
+        }
+        return NextResponse.json({
+          message: 'Sent back to Team Head – QA. They can review your comment and re-assign inspector(s).',
+        });
       }
 
       case 'save_part3_section23': {
-        if (inspectionSkipsPart2Part3(ir)) {
+        if (inspectionSkipsPart2Part3(ir) && !isForwardedToOrdqa(ir)) {
           return NextResponse.json(
-            { error: 'Part III is not used when Part I 19(f) joint inspection is No' },
+            { error: 'Part III is not used until QA Head forwards to ORDAQA' },
             { status: 400 }
           );
         }
@@ -1060,6 +1392,24 @@ export async function POST(
         }
         if (!ir.forwarded_to_ordaqa) {
           return NextResponse.json({ error: 'IR is not forwarded to ORDAQA' }, { status: 400 });
+        }
+        if (part2OutstationDetailsIncomplete(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Complete Part II Outstation details (Email Sent, Name & Sign, Date & Time) before Part III Section 23',
+            },
+            { status: 400 }
+          );
+        }
+        if (inspectionPart4Saved(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Part III Section 23 cannot be edited after Part IV has been submitted by the R&QA Inspector',
+            },
+            { status: 400 }
+          );
         }
         if (!part3Section23EditableStatus(ir.status)) {
           return NextResponse.json(
@@ -1119,9 +1469,9 @@ export async function POST(
       }
 
       case 'save_part3_assignment': {
-        if (inspectionSkipsPart2Part3(ir)) {
+        if (inspectionSkipsPart2Part3(ir) && !isForwardedToOrdqa(ir)) {
           return NextResponse.json(
-            { error: 'Part III is not used when Part I 19(f) joint inspection is No' },
+            { error: 'Part III is not used until QA Head forwards to ORDAQA' },
             { status: 400 }
           );
         }
@@ -1131,9 +1481,36 @@ export async function POST(
         if (!ir.forwarded_to_ordaqa) {
           return NextResponse.json({ error: 'IR is not forwarded to ORDAQA' }, { status: 400 });
         }
+        if (part2OutstationDetailsIncomplete(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Complete Part II Outstation details (Email Sent, Name & Sign, Date & Time) before Part III Section 23',
+            },
+            { status: 400 }
+          );
+        }
+        if (inspectionPart4Saved(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Part III Section 23 cannot be edited after Part IV has been submitted by the R&QA Inspector',
+            },
+            { status: 400 }
+          );
+        }
         if (!part3Section23EditableStatus(ir.status)) {
           return NextResponse.json(
             { error: 'Section 23 assignment can only be completed while the IR is forwarded, assigned, or in progress' },
+            { status: 400 }
+          );
+        }
+        if (ordqaPart5Submitted(ir) || ordqaPart5Approved(ir)) {
+          return NextResponse.json(
+            {
+              error:
+                'Part III Section 23 cannot be edited after Part V is submitted or approved',
+            },
             { status: 400 }
           );
         }
@@ -1200,10 +1577,25 @@ export async function POST(
               parseInt(id, 10),
               String(ir.request_number),
               ordaqaHeadName,
-              ir.initiator_id
+              ir.initiator_id,
+              null,
+              [
+                ir.initiator_id,
+                ir.request_approver_id,
+                ir.nominated_request_approver_id,
+                ir.nominated_team_head_id,
+                ir.qa_approver_id,
+                ir.part1_approved_by,
+                ir.inspector_id,
+                ...collectInspectorIds(ir),
+                ir.ordaqa_inspector_id,
+                ir.ordaqa_approver_id,
+                ir.final_qa_approver_id,
+                ir.approver_id,
+              ]
             );
           } catch (e) {
-            console.error('QA Head memo-return notification:', e);
+            console.error('Memo-return stakeholder notification:', e);
           }
           return NextResponse.json({
             message: 'Section 23 saved — memo returned to QA Head. Assigned/Delegated is not required.',
@@ -1239,7 +1631,26 @@ export async function POST(
             return NextResponse.json(
               {
                 error:
-                  'Delegated path: choose Inspector / QA Rep or Team Head - QA (inspector or qa_approver)',
+                  'Delegated path: choose an R&QA Inspector / QA Rep assigned in Part II (inspector or qa_approver)',
+              },
+              { status: 400 }
+            );
+          }
+          const part2InspectorIds = collectInspectorIds(ir);
+          if (part2InspectorIds.length === 0) {
+            return NextResponse.json(
+              {
+                error:
+                  'Delegated path: Team Head – QA must assign R&QA inspector(s) in Part II before delegation',
+              },
+              { status: 400 }
+            );
+          }
+          if (!part2InspectorIds.includes(oiIdResolved)) {
+            return NextResponse.json(
+              {
+                error:
+                  'Delegated path: choose only an R&QA inspector already assigned in Part II',
               },
               { status: 400 }
             );
@@ -1310,14 +1721,15 @@ export async function POST(
               entityType: 'inspection_request',
               entityId: parseInt(id, 10),
             });
-            if (section23WasComplete) {
-              const assigneeLabel = assigneeName || 'ORDAQA assignee';
-              await notifyInitiatorIrMilestone(ir.initiator_id, parseInt(id, 10), String(ir.request_number), {
+            await notifyIrStakeholders(
+              parseInt(id, 10),
+              {
                 title: 'ORDAQA assignee set',
-                message: `Your inspection request ${ir.request_number}: ORDAQA Head assigned ${assigneeLabel} for Part III / Part V follow-up.`,
+                message: `Inspection request ${ir.request_number}: ORDAQA Head assigned ${assigneeName || 'ORDAQA assignee'} for Part III / Part V follow-up.`,
                 type: 'request_assigned',
-              });
-            }
+              },
+              { excludeUserId: userId, extraUserIds: [oiIdResolved, ir.initiator_id] }
+            );
           }
         } catch (e) {
           console.error('ORDAQA forward notification:', e);
@@ -1337,24 +1749,49 @@ export async function POST(
             { status: 403 }
           );
         }
-        // Part IV is the inspection; after Part V approval → ready for final Team Head – QA Approve & Close
-        await query(
-          `UPDATE inspection_requests
-           SET ordaqa_approver_id = $2,
-               ordaqa_approval_date = NOW(),
-               status = 'inspection_completed',
-               completed_date = NOW(),
-               updated_at = NOW()
-           WHERE id = $1`,
-          [id, userId]
-        );
+        const rqaSkipped = inspectionSkipsRqaPart2AndPart4(ir);
+        // Part IV is the inspection when R&QA involved; DGAQA-only closes on Part V approval
+        if (rqaSkipped) {
+          await query(
+            `UPDATE inspection_requests
+             SET ordaqa_approver_id = $2,
+                 ordaqa_approval_date = NOW(),
+                 status = 'completed',
+                 completed_date = NOW(),
+                 final_qa_approver_id = $2,
+                 final_qa_approval_date = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [id, userId]
+          );
+        } else {
+          await query(
+            `UPDATE inspection_requests
+             SET ordaqa_approver_id = $2,
+                 ordaqa_approval_date = NOW(),
+                 status = 'inspection_completed',
+                 completed_date = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [id, userId]
+          );
+        }
         await logActivity(id, 'part5_ordaqa_approved', 'Part V approved by ORDAQA Head', userId);
-        await logActivity(
-          id,
-          'inspection_completed',
-          'Inspection completed after Part V approval — awaiting Team Head – QA final approval',
-          userId
-        );
+        if (rqaSkipped) {
+          await logActivity(
+            id,
+            'inspection_closed',
+            'Inspection completed and closed after Part V approval (R&QA Part II/IV not required)',
+            userId
+          );
+        } else {
+          await logActivity(
+            id,
+            'inspection_completed',
+            'Inspection completed after Part V approval — awaiting Team Head – QA final approval',
+            userId
+          );
+        }
         const approverName = (session.user as { name?: string })?.name?.trim() || 'ORDAQA Head';
         try {
           const assigneeId =
@@ -1365,19 +1802,31 @@ export async function POST(
             assigneeId,
             approverName
           );
-          await notifyInspectionCompleted(
-            parseInt(id, 10),
-            String(ir.request_number),
-            ir.initiator_id,
-            ir.approver_id != null ? Number(ir.approver_id) : undefined,
-            ir.nominated_team_head_id != null ? Number(ir.nominated_team_head_id) : null,
-            { skipPart2Part3: inspectionUsesLegacyOpenRqaPart4(ir) }
-          );
+          if (rqaSkipped) {
+            await notifyInspectionClosed(
+              parseInt(id, 10),
+              String(ir.request_number),
+              ir.initiator_id,
+              ir.ordaqa_inspector_id != null ? Number(ir.ordaqa_inspector_id) : undefined,
+              userId
+            );
+          } else {
+            await notifyInspectionCompleted(
+              parseInt(id, 10),
+              String(ir.request_number),
+              ir.initiator_id,
+              ir.approver_id != null ? Number(ir.approver_id) : undefined,
+              ir.nominated_team_head_id != null ? Number(ir.nominated_team_head_id) : null,
+              { skipPart2Part3: inspectionUsesLegacyOpenRqaPart4(ir) }
+            );
+          }
         } catch (e) {
           console.error('Part V approved notification:', e);
         }
         return NextResponse.json({
-          message: 'Part V approved — IR ready for Team Head – QA final Approve & Close',
+          message: rqaSkipped
+            ? 'Part V approved — IR completed (R&QA Part II/IV not required)'
+            : 'Part V approved — IR ready for Team Head – QA final Approve & Close',
         });
       }
 
@@ -1554,7 +2003,7 @@ export async function POST(
           console.error('Observation auto-send (Part V):', e);
         }
         try {
-          await notifyOrdaqaHeadsPart5PendingApproval(parseInt(id, 10), String(ir.request_number));
+          await notifyOrdaqaHeadsPart5PendingApproval(parseInt(id, 10), String(ir.request_number), userId);
         } catch (e) {
           console.error('ORDAQA Heads Part V pending notification:', e);
         }
@@ -1564,6 +2013,12 @@ export async function POST(
       }
 
       case 'save_part4': {
+        if (inspectionSkipsRqaPart2AndPart4(ir)) {
+          return NextResponse.json(
+            { error: 'Part IV is not used when Part I R&QA involvement is No' },
+            { status: 400 }
+          );
+        }
         if (ordqaPart5Completed(ir)) {
           return NextResponse.json(
             { error: 'Part IV cannot be edited after Part V (ORDAQA Sections 24–25) is completed' },
@@ -1980,7 +2435,9 @@ export async function POST(
             String(ir.request_number),
             collectInspectorIds(ir),
             thRejectName,
-            trimmedP4Reject
+            trimmedP4Reject,
+            userId,
+            snapshotIrStakeholderIds(ir)
           );
         } catch (e) {
           console.error('Part IV send-back notifications:', e);
@@ -2188,6 +2645,8 @@ export async function POST(
           return NextResponse.json({ error: 'Rejection reason is required' }, { status: 400 });
         }
 
+        const rejectStakeholders = snapshotIrStakeholderIds(ir);
+
         const existingP2Reject = parsePart2Data(ir.part2_data);
         const prevRejectHistory = Array.isArray(existingP2Reject.return_history)
           ? (existingP2Reject.return_history as unknown[])
@@ -2245,18 +2704,10 @@ export async function POST(
             String(ir.request_number),
             ir.initiator_id,
             inspectorUserIds[0],
-            trimmedReason
+            trimmedReason,
+            userId,
+            [...rejectStakeholders, ...inspectorUserIds]
           );
-          if (inspectorUserIds.length > 1) {
-            await createBulkNotifications(inspectorUserIds.slice(1), {
-              title: 'Inspection Rejected',
-              message: `Inspection request ${ir.request_number} has been rejected. Reason: ${trimmedReason}`,
-              type: 'request_rejected',
-              entityType: 'inspection_request',
-              entityId: parseInt(id, 10),
-              sendEmail: true,
-            });
-          }
         } catch (e) {
           console.error('QA reject notification:', e);
         }
@@ -2308,9 +2759,16 @@ export async function POST(
         const prevHistory = Array.isArray(existingP2.return_history)
           ? (existingP2.return_history as unknown[])
           : [];
+        const previousInspectorIds = [
+          ...new Set([
+            ...parseInspectorIds(existingP2.previous_inspector_ids),
+            ...collectInspectorIds(ir),
+          ]),
+        ];
         const mergedP2 = {
           ...existingP2,
           qa_pipeline_touched: true,
+          previous_inspector_ids: previousInspectorIds,
           return_history: [
             ...prevHistory,
             {
@@ -2343,6 +2801,7 @@ export async function POST(
 
         const actorName = (session.user as { name?: string })?.name || 'Team Head – QA';
         const reqApprId = ir.request_approver_id != null ? Number(ir.request_approver_id) : null;
+        const sendBackStakeholders = snapshotIrStakeholderIds(ir);
 
         await query(
           `UPDATE inspection_requests
@@ -2371,16 +2830,22 @@ export async function POST(
           userId
         );
 
-        await notifyQaApproverSendBack(
-          parseInt(id, 10),
-          ir.request_number,
-          ir.initiator_id,
-          reqApprId,
-          trimmed,
-          actorName,
-          target,
-          inspectorUserIds
-        );
+        try {
+          await notifyQaApproverSendBack(
+            parseInt(id, 10),
+            ir.request_number,
+            ir.initiator_id,
+            reqApprId,
+            trimmed,
+            actorName,
+            target,
+            inspectorUserIds,
+            userId,
+            sendBackStakeholders
+          );
+        } catch (e) {
+          console.error('Team Head send-back notifications:', e);
+        }
 
         return NextResponse.json({
           message:

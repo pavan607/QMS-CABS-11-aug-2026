@@ -12,7 +12,8 @@ import {
   resolvePart1ApproverUser,
 } from '@/lib/inspection-access';
 import { normalizeSystemRole } from '@/lib/user-roles';
-import { canUserUpdatePart4, canUserUpdatePart5 } from '@/lib/inspection-display';
+import { canUserUpdatePart4, canUserUpdatePart5, canUserFillPart2OutstationDetails } from '@/lib/inspection-display';
+import { sqlPart1JointInspectionSkippedCondition } from '@/lib/inspection-scope-sql';
 
 export async function GET(request: NextRequest) {
   try {
@@ -206,14 +207,15 @@ export async function GET(request: NextRequest) {
       );
       const part4Candidates = await query(
         `SELECT inspector_id, inspector_ids, status, confirmations, forwarded_to_ordaqa,
-                part3_data, ordaqa_inspector_id, part4_data
+                part3_data, ordaqa_inspector_id, part4_data,
+                so_involves_dgaqa, so_involves_rqa, nominated_team_head_id
          FROM inspection_requests
          WHERE status IN ('request_approved', 'assigned')
            AND (
              inspector_id = $1
              OR inspector_ids::jsonb @> to_jsonb($1::int)
              OR (
-               LOWER(COALESCE(confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               ${sqlPart1JointInspectionSkippedCondition('inspection_requests').replace(/inspection_requests\./g, '')}
                AND nominated_team_head_id IS NULL
                AND inspector_id IS NULL
                AND (inspector_ids IS NULL OR inspector_ids::jsonb = '[]'::jsonb)
@@ -224,10 +226,37 @@ export async function GET(request: NextRequest) {
       const pendingPart4 = part4Candidates.rows.filter((ir) =>
         canUserUpdatePart4(ir, userId, 'inspector')
       ).length;
+      // Delegated path: R&QA inspector set as ordaqa_inspector_id must fill Part V
+      const part5Candidates = await query(
+        `SELECT status, confirmations, forwarded_to_ordaqa, part3_data, part4_data,
+                so_involves_dgaqa, so_involves_rqa, ordaqa_inspector_id, ordaqa_approver_id
+         FROM inspection_requests
+         WHERE ordaqa_inspector_id = $1
+           AND status IN ('assigned', 'in_progress', 'request_approved')`,
+        [userId]
+      );
+      const pendingPart5 = part5Candidates.rows.filter((ir) =>
+        canUserUpdatePart5(ir, userId, 'inspector')
+      ).length;
+      const outstationCandidates = await query(
+        `SELECT status, part2_data, inspector_id, inspector_ids
+         FROM inspection_requests
+         WHERE status IN ('assigned', 'in_progress')
+           AND (
+             inspector_id = $1
+             OR inspector_ids::jsonb @> to_jsonb($1::int)
+           )`,
+        [userId]
+      );
+      const pendingOutstation = outstationCandidates.rows.filter((ir) =>
+        canUserFillPart2OutstationDetails(ir, userId, 'inspector')
+      ).length;
       actionItems = {
         my_assigned: parseInt(assignedRes.rows[0]?.count || 0),
         my_in_progress: parseInt(inProgressRes.rows[0]?.count || 0),
         pending_part4: pendingPart4,
+        pending_part5: pendingPart5,
+        pending_outstation: pendingOutstation,
       };
     } else if (userRole === 'ordaqa_inspector') {
       const ordaqaFilter = `(ordaqa_inspector_id = $1 OR inspector_id = $1 OR inspector_ids::jsonb @> to_jsonb($1::int))`;
@@ -241,7 +270,7 @@ export async function GET(request: NextRequest) {
       );
       const part5Candidates = await query(
         `SELECT status, confirmations, forwarded_to_ordaqa, part3_data, part4_data,
-                ordaqa_inspector_id, ordaqa_approver_id
+                so_involves_dgaqa, so_involves_rqa, ordaqa_inspector_id, ordaqa_approver_id
          FROM inspection_requests
          WHERE ordaqa_inspector_id = $1
            AND status IN ('assigned', 'in_progress')`,
@@ -303,7 +332,11 @@ export async function GET(request: NextRequest) {
     } else if (userRole === 'qa_approver') {
       const pendingAssignRes = await query(
         `SELECT COUNT(*) as count FROM inspection_requests
-         WHERE nominated_team_head_id = $1 AND inspector_id IS NULL AND status = 'request_approved'`,
+         WHERE nominated_team_head_id = $1
+           AND status = 'request_approved'
+           AND inspector_id IS NULL
+           AND (inspector_ids IS NULL OR inspector_ids::jsonb = '[]'::jsonb)
+           AND LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) <> 'yes'`,
         [userId]
       );
       // Part IV submitted by R&QA Inspector — awaiting this Team Head – QA approve/reject
@@ -315,7 +348,7 @@ export async function GET(request: NextRequest) {
              ir.nominated_team_head_id = $1
              OR (
                ir.nominated_team_head_id IS NULL
-               AND LOWER(COALESCE(ir.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               AND ${sqlPart1JointInspectionSkippedCondition('ir')}
                AND EXISTS (
                  SELECT 1 FROM users u
                  WHERE u.id = $1
@@ -335,7 +368,7 @@ export async function GET(request: NextRequest) {
              ir.nominated_team_head_id = $1
              OR (
                ir.nominated_team_head_id IS NULL
-               AND LOWER(COALESCE(ir.confirmations::jsonb ->> 'joint_inspection_request', '')) IN ('no', 'na', 'n/a')
+               AND ${sqlPart1JointInspectionSkippedCondition('ir')}
                AND EXISTS (
                  SELECT 1 FROM users u
                  WHERE u.id = $1
@@ -354,11 +387,22 @@ export async function GET(request: NextRequest) {
         needs_assignment: parseInt(pendingFinalRes.rows[0]?.count || 0),
       };
     } else if (userRole === 'ordaqa_head') {
+      // Part III only after Outstation details are complete (when Outstation was enabled)
+      const outstationReady = `
+           AND NOT (
+             COALESCE(part2_data::jsonb ->> 'outstation_inspection', '') IN ('true', 't', '1', 'yes')
+             AND (
+               LOWER(TRIM(COALESCE(part2_data::jsonb ->> 'email_sent', ''))) NOT IN ('yes', 'no')
+               OR TRIM(COALESCE(part2_data::jsonb ->> 'email_sent_by', '')) = ''
+               OR TRIM(COALESCE(part2_data::jsonb ->> 'email_sent_date', '')) = ''
+             )
+           )`;
       const part3Base = `
          WHERE COALESCE(forwarded_to_ordaqa, false) = true
            AND status IN ('request_approved', 'assigned', 'in_progress')
            AND ordaqa_inspector_id IS NULL
-           AND LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) <> 'yes'`;
+           AND LOWER(COALESCE(part3_data::jsonb ->> 'memo_returned', '')) <> 'yes'
+           ${outstationReady}`;
       const reforwardFlag = `
            AND (
              COALESCE(part3_data::jsonb ->> 'reforwarded_after_memo', '') IN ('true', 't', '1', 'yes')

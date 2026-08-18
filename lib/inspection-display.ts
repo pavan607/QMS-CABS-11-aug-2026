@@ -1,6 +1,7 @@
 /** Normalise item_pertains_to JSON/array values for display (PDF, detail screens). */
 
 import { parseInspectorIds } from '@/lib/inspector-ids';
+import { parsePart1Bool } from '@/lib/part1-so-fields';
 
 const ITEM_PERTAINS_LABELS: Record<string, string> = {
   airborne: 'Airborne Unit',
@@ -857,7 +858,7 @@ function parseJsonRecord(val: unknown): Record<string, unknown> {
   return {};
 }
 
-/** Part I 19(f) confirmations object. */
+/** Part I confirmations object. */
 export function parseConfirmations(val: unknown): Record<string, string> {
   const raw = parseJsonRecord(val);
   const out: Record<string, string> = {};
@@ -867,18 +868,64 @@ export function parseConfirmations(val: unknown): Record<string, string> {
   return out;
 }
 
-/** Part I 19(f) — joint inspection with ORDAQA requested (Yes). */
-export function jointInspectionRequestedInPart1(ir: { confirmations?: unknown }): boolean {
+/**
+ * Field 4 — DGAQA involvement (DGAQA and ORDAQA are the same).
+ * When Yes, ORDAQA Parts III and V are required.
+ * Legacy fallback: old Part I 19(f) joint_inspection_request = yes.
+ */
+export function dgaqaInvolvedInPart1(ir: {
+  so_involves_dgaqa?: unknown;
+  confirmations?: unknown;
+}): boolean {
+  if (parsePart1Bool(ir.so_involves_dgaqa)) return true;
   return parseConfirmations(ir.confirmations).joint_inspection_request === 'yes';
 }
 
 /**
- * Part I 19(f) No (or legacy N/A) — ORDAQA Parts III / V are not used.
- * Part II (QA Head → Team Head – QA selection, then inspector assignment) still applies.
+ * Field 4 — R&QA involvement.
+ * When Yes, Parts II and IV are required.
+ * Legacy: when neither involvement flag is set, treat as R&QA involved (historical default).
  */
-export function inspectionSkipsPart2Part3(ir: { confirmations?: unknown }): boolean {
+export function rqaInvolvedInPart1(ir: {
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
+}): boolean {
+  if (parsePart1Bool(ir.so_involves_rqa)) return true;
+  const dgaqa = parsePart1Bool(ir.so_involves_dgaqa);
+  const rqa = parsePart1Bool(ir.so_involves_rqa);
+  if (!dgaqa && !rqa) return true;
+  return false;
+}
+
+/** Parts II and IV are not used when R&QA involvement is No. */
+export function inspectionSkipsRqaPart2AndPart4(ir: {
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
+}): boolean {
+  return !rqaInvolvedInPart1(ir);
+}
+
+/** @deprecated Use dgaqaInvolvedInPart1 — kept as alias for existing call sites. */
+export function jointInspectionRequestedInPart1(ir: {
+  so_involves_dgaqa?: unknown;
+  confirmations?: unknown;
+}): boolean {
+  return dgaqaInvolvedInPart1(ir);
+}
+
+/**
+ * Part I DGAQA/ORDAQA involvement is No (legacy 19(f) No / N/A also).
+ * Parts III / V stay unused unless QA Head later forwards to ORDAQA in Part II.
+ * (Function name is historical; it does not skip Part II.)
+ */
+export function inspectionSkipsPart2Part3(ir: {
+  so_involves_dgaqa?: unknown;
+  confirmations?: unknown;
+}): boolean {
+  if (dgaqaInvolvedInPart1(ir)) return false;
   const v = parseConfirmations(ir.confirmations).joint_inspection_request;
-  return v === 'no' || v === 'na' || v === 'n/a';
+  if (v === 'no' || v === 'na' || v === 'n/a') return true;
+  return true;
 }
 
 /**
@@ -951,10 +998,41 @@ export function memoReturnedAwaitingQaHead(ir: {
   return String(p3.memo_returned ?? '').trim().toLowerCase() === 'yes';
 }
 
+/**
+ * Nominated Team Head – QA still needs to assign inspector(s).
+ * False once inspectors exist or memo is back with QA Head.
+ * Forward to ORDAQA does not skip this — R&QA inspectors are still assigned in Part II.
+ */
+export function teamHeadQaNeedsInspectorAssignment(ir: {
+  status?: string | null;
+  inspector_id?: number | null;
+  inspector_ids?: unknown;
+  assigned_inspectors?: Array<{ id?: number | null; name?: string | null }> | null;
+  forwarded_to_ordaqa?: unknown;
+  part3_data?: unknown;
+}): boolean {
+  if (String(ir.status ?? '') !== 'request_approved') return false;
+  if (memoReturnedAwaitingQaHead(ir)) return false;
+  if (ir.inspector_id != null && Number(ir.inspector_id) > 0) return false;
+  if (parseInspectorIds(ir.inspector_ids).length > 0) return false;
+  const fromApi = ir.assigned_inspectors || [];
+  if (fromApi.some((i) => i?.id != null && Number(i.id) > 0)) return false;
+  return true;
+}
+
+/**
+ * When Team Head enabled Outstation Inspection, Part III waits until the assigned
+ * R&QA inspector fills Email Sent / Name & Sign / Date & Time.
+ */
+export function part3BlockedByIncompleteOutstation(ir: { part2_data?: unknown }): boolean {
+  return part2OutstationDetailsIncomplete(ir);
+}
+
 /** ORDAQA Head still needs to complete Part III / assign (including after QA Head re-forward). */
 export function ordaqaHeadPart3ActionRequired(ir: {
   forwarded_to_ordaqa?: unknown;
   ordaqa_inspector_id?: number | null;
+  part2_data?: unknown;
   part3_data?: unknown;
   status?: string | null;
 }): boolean {
@@ -965,6 +1043,8 @@ export function ordaqaHeadPart3ActionRequired(ir: {
   if (ir.ordaqa_inspector_id != null && String(ir.ordaqa_inspector_id).trim() !== '') {
     return false;
   }
+  // After Outstation is submitted (when enabled), Part III becomes the next action
+  if (part3BlockedByIncompleteOutstation(ir)) return false;
   const p3 = parseJsonRecord(ir.part3_data);
   return String(p3.memo_returned ?? '').trim().toLowerCase() !== 'yes';
 }
@@ -991,15 +1071,15 @@ export function ordaqaHeadReforwardActionRequired(ir: {
 }
 
 /**
- * True when ORDAQA path applies (Part III + Part V) — Part I 19(f) Yes and/or Part II forward to ORDAQA.
- * False when Part I 19(f) is No (or legacy N/A) — Part II Team Head path still applies without ORDAQA.
+ * True when ORDAQA path applies (Part III + Part V) —
+ * Field 4 DGAQA involvement Yes (DGAQA = ORDAQA) and/or QA Head forwarded to ORDAQA in Part II.
  */
 export function inspectionRequiresOrdqaPart5(ir: {
+  so_involves_dgaqa?: unknown;
   confirmations?: unknown;
   forwarded_to_ordaqa?: unknown;
 }): boolean {
-  if (inspectionSkipsPart2Part3(ir)) return false;
-  return jointInspectionRequestedInPart1(ir) || isForwardedToOrdqa(ir);
+  return dgaqaInvolvedInPart1(ir) || isForwardedToOrdqa(ir);
 }
 
 /** Team Head – QA final sign-off (Approve & Close) recorded. */
@@ -1060,6 +1140,8 @@ export const QA_APPROVER_SKIP_PATH_STATUSES = [
 /** IR is ready for final Team Head – QA Approve & Close (no Start/Complete step). */
 export function inspectionReadyForFinalTeamHeadApproval(ir: {
   status?: string;
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
   confirmations?: unknown;
   part4_data?: unknown;
   part3_data?: unknown;
@@ -1067,6 +1149,14 @@ export function inspectionReadyForFinalTeamHeadApproval(ir: {
   ordaqa_approver_id?: number | null;
 }): boolean {
   if (ir.status === 'inspection_completed') return true;
+  // DGAQA-only path: Part V approval is enough (no Part IV / Team Head)
+  if (inspectionSkipsRqaPart2AndPart4(ir)) {
+    return (
+      inspectionRequiresOrdqaPart5(ir) &&
+      ordqaPart5Completed(ir) &&
+      ['assigned', 'in_progress', 'inspection_completed', 'request_approved'].includes(ir.status || '')
+    );
+  }
   if (!part4ApprovedByTeamHead(ir)) return false;
   if (inspectionRequiresOrdqaPart5(ir)) {
     return (
@@ -1082,6 +1172,8 @@ export function inspectionReadyForFinalTeamHeadApproval(ir: {
 export function canUserQaApproverApproveAndClose(
   ir: {
     status?: string;
+    so_involves_rqa?: unknown;
+    so_involves_dgaqa?: unknown;
     confirmations?: unknown;
     nominated_team_head_id?: number | null;
     part4_data?: unknown;
@@ -1092,6 +1184,8 @@ export function canUserQaApproverApproveAndClose(
   userId: number,
   userRole?: string
 ): boolean {
+  // DGAQA-only path closes via ORDAQA Head Part V approval — no Team Head step
+  if (inspectionSkipsRqaPart2AndPart4(ir)) return false;
   if (!inspectionReadyForFinalTeamHeadApproval(ir)) return false;
   if (userRole === 'administrator') return true;
   if (userRole !== 'qa_approver' || !userId) return false;
@@ -1178,14 +1272,28 @@ export function part3Section23HasSavedData(ir: {
   );
 }
 
-/** ORDAQA Head / admin may complete or update Section 23 while IR is forwarded and status allows. */
+/** ORDAQA Head / admin may complete or update Section 23 while IR is forwarded and status allows.
+ * Locked once Part IV is submitted by R&QA inspector, or Part V is submitted/approved.
+ * Also blocked while Outstation Inspection details are still incomplete. */
 export function canEditPart3Section23(ir: {
   forwarded_to_ordaqa?: boolean | null;
   status?: string;
   ordaqa_inspector_id?: number | null;
+  part2_data?: unknown;
+  part3_data?: unknown;
+  part4_data?: unknown;
+  ordaqa_approver_id?: number | null;
+  so_involves_dgaqa?: unknown;
+  confirmations?: unknown;
 }): boolean {
   if (!isForwardedToOrdqa(ir)) return false;
-  return part3Section23EditableStatus(ir.status);
+  if (!part3Section23EditableStatus(ir.status)) return false;
+  // Do not allow changing Section 23 after Part IV is submitted
+  if (inspectionPart4Saved(ir)) return false;
+  // Do not allow changing Section 23 after Part V is with ORDAQA Head or completed
+  if (ordqaPart5Submitted(ir) || ordqaPart5Approved(ir)) return false;
+  if (part3BlockedByIncompleteOutstation(ir)) return false;
+  return true;
 }
 
 /** Sections 24–25 fields (Part V UI saves into part3_data alongside Section 23). */
@@ -1218,6 +1326,107 @@ export function isUserAssignedPart2Inspector(
   return fromApi.some((i) => i?.id != null && Number(i.id) === userId);
 }
 
+/** Part II toggle: Team Head enabled Outstation Inspection. */
+export function isOutstationInspectionEnabled(ir: { part2_data?: unknown }): boolean {
+  const v = parseJsonRecord(ir.part2_data).outstation_inspection;
+  if (v === true || v === 1) return true;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes' || s === 't';
+  }
+  return false;
+}
+
+/** Part II outstation email fields still missing after Team Head enabled Outstation Inspection. */
+export function part2OutstationDetailsIncomplete(ir: { part2_data?: unknown }): boolean {
+  if (!isOutstationInspectionEnabled(ir)) return false;
+  const p = parseJsonRecord(ir.part2_data);
+  const emailSent = String(p.email_sent ?? '').trim().toLowerCase();
+  const by = String(p.email_sent_by ?? '').trim();
+  const date = String(p.email_sent_date ?? '').trim();
+  if (emailSent !== 'yes' && emailSent !== 'no') return true;
+  if (!by) return true;
+  if (!date) return true;
+  return false;
+}
+
+/** True after the assigned R&QA inspector has submitted Outstation Email Sent / Name & Sign / Date & Time. */
+export function part2OutstationDetailsSubmitted(ir: { part2_data?: unknown }): boolean {
+  return isOutstationInspectionEnabled(ir) && !part2OutstationDetailsIncomplete(ir);
+}
+
+/** Outstation edit/reject/send-back locked once ORDAQA Head has submitted Part III (Section 23). */
+export function part2OutstationEditLockedByPart3(ir: {
+  part3_data?: unknown;
+  ordaqa_inspector_id?: number | null;
+}): boolean {
+  return part3Section23HasSavedData(ir);
+}
+
+/** Assigned R&QA inspector may fill outstation Email Sent / Name & Sign / Date & Time. */
+export function canUserFillPart2OutstationDetails(
+  ir: {
+    status?: string;
+    part2_data?: unknown;
+    part3_data?: unknown;
+    ordaqa_inspector_id?: number | null;
+    inspector_id?: number | null;
+    inspector_ids?: unknown;
+    assigned_inspectors?: Array<{ id?: number | null }> | null;
+  },
+  userId: number,
+  userRole?: string
+): boolean {
+  if (part2OutstationEditLockedByPart3(ir)) return false;
+  if (!part2OutstationDetailsIncomplete(ir)) return false;
+  if (!['assigned', 'in_progress'].includes(ir.status || '')) return false;
+  if (userRole === 'administrator') return true;
+  if (!userId) return false;
+  return isUserAssignedPart2Inspector(ir, userId);
+}
+
+/**
+ * Assigned R&QA inspector may Reject (close IR) or Send back to Team Head – QA
+ * while status is assigned / in progress, until Part IV is submitted for Team Head approval.
+ */
+export function canUserInspectorOutstationRejectOrSendBack(
+  ir: {
+    status?: string;
+    part2_data?: unknown;
+    part3_data?: unknown;
+    part4_data?: unknown;
+    ordaqa_inspector_id?: number | null;
+    ordaqa_approver_id?: number | null;
+    inspector_id?: number | null;
+    inspector_ids?: unknown;
+    assigned_inspectors?: Array<{ id?: number | null }> | null;
+    so_involves_rqa?: unknown;
+    so_involves_dgaqa?: unknown;
+    confirmations?: unknown;
+    forwarded_to_ordaqa?: unknown;
+  },
+  userId: number,
+  userRole?: string
+): boolean {
+  if (!isOutstationInspectionEnabled(ir)) return false;
+  if (!['assigned', 'in_progress'].includes(String(ir.status || ''))) return false;
+
+  const assigned = isUserAssignedPart2Inspector(ir, userId);
+  if (userRole !== 'administrator' && !assigned) return false;
+
+  const p4Status = parseJsonRecord(ir.part4_data).team_head_approval_status;
+  if (p4Status === 'pending' || p4Status === 'approved') return false;
+  if (ordqaPart5Submitted(ir) || ordqaPart5Approved(ir)) return false;
+  return true;
+}
+
+/** Latest inspector → Team Head send-back comment stored on Part II. */
+export function getInspectorSendBackToTeamHeadComment(ir: { part2_data?: unknown }): string | null {
+  const p = parseJsonRecord(ir.part2_data);
+  const c = String(p.inspector_send_back_comment ?? '').trim();
+  return c || null;
+}
+
 /** Primary R&QA inspector from Part II assignment (`inspector_id`, else first in `inspector_ids`). */
 export function getPrimaryInspectorId(ir: {
   inspector_id?: number | null;
@@ -1236,10 +1445,12 @@ export function getPrimaryInspectorId(ir: {
 /** ORDAQA path: Part IV only after Part III Section 23 (assignee set). */
 export function part3RequiredBeforePart4(ir: {
   forwarded_to_ordaqa?: unknown;
+  so_involves_dgaqa?: unknown;
+  so_involves_rqa?: unknown;
   confirmations?: unknown;
 }): boolean {
-  if (inspectionSkipsPart2Part3(ir)) return false;
-  return jointInspectionRequestedInPart1(ir) || isForwardedToOrdqa(ir);
+  if (inspectionSkipsRqaPart2AndPart4(ir)) return false;
+  return dgaqaInvolvedInPart1(ir) || isForwardedToOrdqa(ir);
 }
 
 export function part3CompleteForOrdqaWorkflow(ir: {
@@ -1351,6 +1562,8 @@ export function canUserUpdatePart4(
     inspector_ids?: unknown;
     assigned_inspectors?: Array<{ id?: number | null }> | null;
     status?: string;
+    so_involves_rqa?: unknown;
+    so_involves_dgaqa?: unknown;
     confirmations?: unknown;
     forwarded_to_ordaqa?: boolean | null;
     part3_data?: unknown;
@@ -1360,6 +1573,7 @@ export function canUserUpdatePart4(
   userId: number,
   userRole?: string
 ): boolean {
+  if (inspectionSkipsRqaPart2AndPart4(ir)) return false;
   if (ordqaPart5Completed(ir)) return false;
   if (part4PendingTeamHeadApproval(ir)) return false;
   if (getPart4TeamHeadApprovalStatusRaw(ir) === 'approved') return false;
@@ -1382,11 +1596,18 @@ export function canUserUpdatePart4(
 
 /** Reports saved — prerequisites before Start Inspection. */
 export function inspectionReadyToStart(ir: {
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
   part4_data?: unknown;
   part3_data?: unknown;
   forwarded_to_ordaqa?: unknown;
   ordaqa_approver_id?: number | null;
+  confirmations?: unknown;
 }): boolean {
+  if (inspectionSkipsRqaPart2AndPart4(ir)) {
+    if (inspectionRequiresOrdqaPart5(ir)) return ordqaPart5Completed(ir);
+    return true;
+  }
   if (!inspectionPart4Saved(ir)) return false;
   if (!part4ApprovedByTeamHead(ir)) return false;
   if (inspectionRequiresOrdqaPart5(ir)) return ordqaPart5Completed(ir);
@@ -1519,6 +1740,8 @@ export function canUserOrdqaHeadPart5SendBack(
 export function canUserUpdatePart5(
   ir: {
     status?: string;
+    so_involves_rqa?: unknown;
+    so_involves_dgaqa?: unknown;
     confirmations?: unknown;
     forwarded_to_ordaqa?: unknown;
     part3_data?: unknown;
@@ -1530,13 +1753,15 @@ export function canUserUpdatePart5(
   userRole?: string
 ): boolean {
   if (!inspectionRequiresOrdqaPart5(ir)) return false;
-  if (inspectionSkipsPart2Part3(ir)) return false;
-  if (!inspectionPart4Saved(ir)) return false;
-  if (!part4ApprovedByTeamHead(ir)) return false;
+  // When R&QA is involved, Part IV must be done first; DGAQA-only can fill Part V after Part III
+  if (!inspectionSkipsRqaPart2AndPart4(ir)) {
+    if (!inspectionPart4Saved(ir)) return false;
+    if (!part4ApprovedByTeamHead(ir)) return false;
+  }
   if (ordqaPart5Approved(ir)) return false;
   if (ordqaPart5Submitted(ir)) return false;
   const status = ir.status || '';
-  if (!['assigned', 'in_progress'].includes(status)) return false;
+  if (!['request_approved', 'assigned', 'in_progress'].includes(status)) return false;
   if (userRole === 'administrator') return true;
   if (!userId) return false;
   return ir.ordaqa_inspector_id != null && Number(ir.ordaqa_inspector_id) === userId;
@@ -1544,11 +1769,18 @@ export function canUserUpdatePart5(
 
 /** Part IV saved & Team Head–approved; when ORDAQA, Part V submitted and Head-approved — required before Complete Inspection. */
 export function inspectionReportsReadyForTeamHead(ir: {
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
   part4_data?: unknown;
   part3_data?: unknown;
   forwarded_to_ordaqa?: unknown;
   ordaqa_approver_id?: number | null;
+  confirmations?: unknown;
 }): boolean {
+  if (inspectionSkipsRqaPart2AndPart4(ir)) {
+    if (!inspectionRequiresOrdqaPart5(ir)) return true;
+    return ordqaPart5Completed(ir);
+  }
   if (!inspectionPart4Saved(ir)) return false;
   if (!part4ApprovedByTeamHead(ir)) return false;
   if (!inspectionRequiresOrdqaPart5(ir)) return true;
@@ -1580,8 +1812,11 @@ function firstNonEmpty(...vals: Array<string | null | undefined>): string | null
  */
 export function resolveInspectionCustody(ir: {
   status?: string | null;
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
   confirmations?: unknown;
   forwarded_to_ordaqa?: unknown;
+  part2_data?: unknown;
   part3_data?: unknown;
   part4_data?: unknown;
   initiator_name?: string | null;
@@ -1609,6 +1844,7 @@ export function resolveInspectionCustody(ir: {
 }): InspectionCustody {
   const status = String(ir.status || '');
   const needsOrdqa = inspectionRequiresOrdqaPart5(ir);
+  const needsRqa = rqaInvolvedInPart1(ir);
   const forwarded = isForwardedToOrdqa(ir);
   const section23 = part3Section23HasSavedData(ir);
   const inspectors = formatAssignedInspectorsDisplay(ir, '');
@@ -1650,17 +1886,17 @@ export function resolveInspectionCustody(ir: {
   if (status === 'pending_request_approval') {
     return {
       stage: 'Part I',
-      role: 'Request Approver',
+      role: 'Part I Approver',
       name: requestApprover,
-      action: 'Forward / Send back / Reject',
+      action: 'Approve Part I / Send back / Reject',
     };
   }
   if (status === 'pending_part1_approval') {
     return {
       stage: 'Part I',
-      role: 'Part I Approver',
+      role: 'Forward Request',
       name: part1Approver,
-      action: 'Approve Part I',
+      action: 'Forward Request',
     };
   }
 
@@ -1673,8 +1909,8 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  // Part II — QA Head nominates Team Head
-  if (!ir.nominated_team_head_id && status === 'request_approved') {
+  // Part II — QA Head nominates Team Head (R&QA path only)
+  if (needsRqa && !ir.nominated_team_head_id && status === 'request_approved') {
     return {
       stage: 'Part II',
       role: 'QA Head',
@@ -1683,13 +1919,28 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  // Team Head assigns inspectors
-  if (ir.nominated_team_head_id && !hasInspectors) {
+  // Team Head assigns inspectors (R&QA path only)
+  if (needsRqa && ir.nominated_team_head_id && !hasInspectors) {
     return {
       stage: 'Part II',
       role: 'Team Head – QA',
       name: teamHead,
       action: 'Assign R&QA inspector(s)',
+    };
+  }
+
+  // Part II — assigned R&QA inspector fills Outstation details (before Part III / IV)
+  if (
+    needsRqa &&
+    hasInspectors &&
+    part2OutstationDetailsIncomplete(ir) &&
+    ['assigned', 'in_progress', 'request_approved'].includes(status)
+  ) {
+    return {
+      stage: 'Part II',
+      role: 'R&QA Inspector',
+      name: inspectors || null,
+      action: 'Fill Outstation Inspection details (Email Sent, Name & Sign, Date & Time)',
     };
   }
 
@@ -1723,25 +1974,25 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  // Part V with assignee
-  if (
-    needsOrdqa &&
-    section23 &&
-    forwarded &&
-    inspectionPart4Saved(ir) &&
-    part4ApprovedByTeamHead(ir) &&
-    !ordqaPart5Submitted(ir)
-  ) {
-    return {
-      stage: 'Part V',
-      role: 'ORDAQA Assignee',
-      name: ordaqaAssignee,
-      action: 'Complete Sections 24–25',
-    };
+  // Part V with assignee (after Part III; Part IV only when R&QA involved)
+  if (needsOrdqa && section23 && forwarded && !ordqaPart5Submitted(ir)) {
+    const part4Ready =
+      !needsRqa || (inspectionPart4Saved(ir) && part4ApprovedByTeamHead(ir));
+    if (part4Ready) {
+      return {
+        stage: 'Part V',
+        role: 'ORDAQA Assignee',
+        name: ordaqaAssignee,
+        action: 'Complete Sections 24–25',
+      };
+    }
   }
 
-  // Ready for Approve & Close
-  if (inspectionReadyForFinalTeamHeadApproval({ ...ir, status: status || undefined })) {
+  // Ready for Approve & Close (R&QA Team Head path only)
+  if (
+    needsRqa &&
+    inspectionReadyForFinalTeamHeadApproval({ ...ir, status: status || undefined })
+  ) {
     return {
       stage: 'Approve & Close',
       role: 'Team Head – QA',
@@ -1751,7 +2002,7 @@ export function resolveInspectionCustody(ir: {
   }
 
   // Part IV with R&QA inspectors (or waiting Part III gate)
-  if (needsOrdqa && forwarded && section23 && !inspectionPart4Saved(ir)) {
+  if (needsRqa && needsOrdqa && forwarded && section23 && !inspectionPart4Saved(ir)) {
     return {
       stage: 'Part IV',
       role: 'R&QA Inspector',
@@ -1760,7 +2011,7 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  if (!needsOrdqa && hasInspectors && !inspectionPart4Saved(ir)) {
+  if (needsRqa && !needsOrdqa && hasInspectors && !inspectionPart4Saved(ir)) {
     return {
       stage: 'Part IV',
       role: 'R&QA Inspector',
@@ -1769,7 +2020,7 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  if (hasInspectors && inspectionPart4Saved(ir) && part4RejectedByTeamHead(ir)) {
+  if (needsRqa && hasInspectors && inspectionPart4Saved(ir) && part4RejectedByTeamHead(ir)) {
     return {
       stage: 'Part IV',
       role: 'R&QA Inspector',
@@ -1778,13 +2029,25 @@ export function resolveInspectionCustody(ir: {
     };
   }
 
-  // Joint inspection requested but not yet forwarded — still with QA Head / Team Head path
-  if (needsOrdqa && !forwarded && hasInspectors && !section23) {
+  // Joint inspection / DGAQA path but not yet forwarded — still with QA Head / Team Head path
+  if (needsOrdqa && !forwarded && needsRqa && hasInspectors && !section23) {
     return {
       stage: 'Part II',
       role: teamHead ? 'Team Head – QA / QA Head' : 'QA Head',
       name: firstNonEmpty(teamHead, qaHead),
       action: 'Forward to ORDAQA for Joint Inspection when ready',
+    };
+  }
+
+  // DGAQA-only: awaiting ORDAQA forward / Part III
+  if (needsOrdqa && !needsRqa && !section23) {
+    return {
+      stage: 'Part III',
+      role: 'ORDAQA Head',
+      name: ordaqaHead,
+      action: forwarded
+        ? 'Complete Section 23 (Assigned / Delegated)'
+        : 'Awaiting forward to ORDAQA',
     };
   }
 

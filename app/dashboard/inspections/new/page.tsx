@@ -402,11 +402,6 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
       previous_observations_status: String(conf?.previous_observations_status ?? ''),
       cocs_available: String(conf?.cocs_available ?? ''),
       instruments_available: String(conf?.instruments_available ?? ''),
-      // 19(f) is Yes/No only — clear legacy N/A so the user must reselect
-      joint_inspection_request: (() => {
-        const v = String(conf?.joint_inspection_request ?? '').toLowerCase();
-        return v === 'na' || v === 'n/a' ? '' : String(conf?.joint_inspection_request ?? '');
-      })(),
     },
     design_coordinator_name: String(ir.design_coordinator_name || ''),
     certified_by_name: String(ir.certified_by_name || ''),
@@ -852,7 +847,6 @@ function createEmptyPart1Form() {
       previous_observations_status: '',
       cocs_available: '',
       instruments_available: '',
-      joint_inspection_request: '',
     },
     designer_rep_name: '',
     designer_rep_designation: '',
@@ -1218,17 +1212,13 @@ function NewInspectionRequestForm() {
           venue_category: parsePart1Venue(ir.venue || '').category,
           venue_detail: parsePart1Venue(ir.venue || '').detail,
           document_details: baseDocs,
-          confirmations: {
-            approved_docs_available: String(conf?.approved_docs_available ?? ''),
-            logbook_updated: String(conf?.logbook_updated ?? ''),
-            previous_observations_status: String(conf?.previous_observations_status ?? ''),
-            cocs_available: String(conf?.cocs_available ?? ''),
-            instruments_available: String(conf?.instruments_available ?? ''),
-            joint_inspection_request: (() => {
-              const v = String(conf?.joint_inspection_request ?? '').toLowerCase();
-              return v === 'na' || v === 'n/a' ? '' : String(conf?.joint_inspection_request ?? '');
-            })(),
-          },
+    confirmations: {
+      approved_docs_available: String(conf?.approved_docs_available ?? ''),
+      logbook_updated: String(conf?.logbook_updated ?? ''),
+      previous_observations_status: String(conf?.previous_observations_status ?? ''),
+      cocs_available: String(conf?.cocs_available ?? ''),
+      instruments_available: String(conf?.instruments_available ?? ''),
+    },
           designer_rep_name: ir.designer_rep_name || '',
           designer_rep_designation: designerRepDesignation,
           designer_rep_contact: ir.designer_rep_contact || '',
@@ -1264,6 +1254,11 @@ function NewInspectionRequestForm() {
     } = formState;
     return {
       ...formForApi,
+      confirmations: (() => {
+        const conf = { ...(formState.confirmations as Record<string, string>) };
+        delete conf.joint_inspection_request;
+        return conf;
+      })(),
       venue: formatPart1Venue(venue_category, venue_detail),
       item_pertains_to: formState.item_pertains_to.filter((v) => v !== 'other'),
       item_pertains_to_other: null,
@@ -1555,6 +1550,21 @@ function NewInspectionRequestForm() {
           submissionDate,
         );
         if (suggestedFrom) draft.inspection_date_from = suggestedFrom;
+      }
+      // Drop removed 19(f) so old local drafts do not fail confirmation validation
+      if (draft.confirmations && typeof draft.confirmations === 'object') {
+        const conf = { ...(draft.confirmations as Record<string, string>) };
+        delete conf.joint_inspection_request;
+        draft = {
+          ...draft,
+          confirmations: {
+            approved_docs_available: String(conf.approved_docs_available ?? ''),
+            logbook_updated: String(conf.logbook_updated ?? ''),
+            previous_observations_status: String(conf.previous_observations_status ?? ''),
+            cocs_available: String(conf.cocs_available ?? ''),
+            instruments_available: String(conf.instruments_available ?? ''),
+          },
+        };
       }
       suppressCascadeRef.current = 6;
       skipAutosaveRef.current = 2;
@@ -1854,7 +1864,8 @@ function NewInspectionRequestForm() {
       errors.so_attachment = '4. Supply Order attachment is required';
     }
     if (!form.so_involves_dgaqa && !form.so_involves_rqa) {
-      errors.so_involvement = 'Involvement in this inspection is required — select DGAQA and/or R&QA';
+      errors.so_involvement =
+        '4. Involvement in this inspection is required — select DGAQA (ORDAQA) and/or R&QA';
     }
     if (!form.source) errors.source = '5. Source is required';
     if (!form.oem_name.trim()) errors.oem_name = 'OEM Name is required';
@@ -1977,8 +1988,17 @@ function NewInspectionRequestForm() {
         }
       }
     }
-    const unanswered = Object.entries(form.confirmations).filter(([, v]) => !v);
-    if (unanswered.length > 0) errors.confirmations = '19. All confirmations must be answered';
+    const REQUIRED_CONFIRMATION_KEYS = [
+      'approved_docs_available',
+      'logbook_updated',
+      'previous_observations_status',
+      'cocs_available',
+      'instruments_available',
+    ] as const;
+    const unanswered = REQUIRED_CONFIRMATION_KEYS.filter(
+      (key) => !String((form.confirmations as Record<string, string>)?.[key] || '').trim()
+    );
+    if (unanswered.length > 0) errors.confirmations = '19. All confirmations (a–e) must be answered';
     if (!form.nominated_request_approver_id?.trim()) {
       errors.nominated_request_approver_id = '21. Designer DH/GD/TH Name (Certifier) is required';
     }
@@ -2470,7 +2490,7 @@ function NewInspectionRequestForm() {
 
             <div className="space-y-1.5">
               <Label className="text-sm font-normal text-muted-foreground">
-                Involvement in this inspection <span className="text-destructive">*</span>
+                4. Involvement in this inspection <span className="text-destructive">*</span>
               </Label>
               <div
                 className={`flex flex-wrap gap-4 rounded-md p-1 ${
@@ -2492,7 +2512,7 @@ function NewInspectionRequestForm() {
                     }}
                     className="h-4 w-4 rounded border-gray-300"
                   />
-                  <span className="text-sm">DGAQA</span>
+                  <span className="text-sm">DGAQA (ORDAQA)</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -2514,7 +2534,11 @@ function NewInspectionRequestForm() {
               </div>
               {errMsg('so_involvement')}
               <p className="text-xs text-muted-foreground">
-                Checked = Yes, unchecked = No (for DGAQA and for R&amp;QA).
+                Checked = Yes, unchecked = No.
+                {' '}If <strong>both DGAQA (ORDAQA) and R&amp;QA</strong> are Yes, <strong>all parts (II, III, IV, V)</strong> are required.
+                {' '}If only <strong>R&amp;QA</strong> is Yes, Part II and Part IV are required.
+                {' '}If only <strong>DGAQA (ORDAQA)</strong> is Yes, Part III and Part V are required.
+                {' '}DGAQA and ORDAQA are the same.
               </p>
             </div>
 
@@ -3124,7 +3148,6 @@ function NewInspectionRequestForm() {
                 { key: 'previous_observations_status', label: 'c) Status of the previous observations/NCs.' },
                 { key: 'cocs_available', label: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.' },
                 { key: 'instruments_available', label: 'e) Applicable measuring instruments/Testing facilities are available with valid calibration certificates.' },
-                { key: 'joint_inspection_request', label: 'f) Request for Joint Inspection with ORDAQA as per approved QAP.' },
               ].map(item => (
                 <div key={item.key} className="flex items-start gap-4">
                   <div className="flex-1">
@@ -3144,14 +3167,9 @@ function NewInspectionRequestForm() {
                     </Select>
                   ) : (
                     <YesNoSelect
-                      value={
-                        item.key === 'joint_inspection_request' &&
-                        ['na', 'n/a'].includes(String((form.confirmations as any)[item.key] || '').toLowerCase())
-                          ? ''
-                          : (form.confirmations as any)[item.key] || ''
-                      }
+                      value={(form.confirmations as any)[item.key] || ''}
                       onChange={(v) => updateConfirmation(item.key, v)}
-                      allowNa={item.key !== 'joint_inspection_request'}
+                      allowNa
                     />
                   )}
                 </div>

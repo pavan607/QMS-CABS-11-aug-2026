@@ -1,6 +1,7 @@
 import pool from './db';
 import { normalizeEmployeeId } from './employee-id';
 import { PART1_APPROVER_EMPLOYEE_ID } from './part1-approver';
+import { parseInspectorIds } from './inspector-ids';
 
 
 export type NotificationType =
@@ -24,6 +25,8 @@ export type NotificationType =
   | 'team_head_qa_nominated'
   | 'part2_inspector_assigned'
   | 'part2_inspector_replaced'
+  | 'part2_inspector_rejected'
+  | 'part2_inspector_send_back'
   | 'part4_saved'
   | 'part4_pending_team_head_approval'
   | 'part4_team_head_rejected'
@@ -295,6 +298,22 @@ export async function notifyRequestApproversPendingForward(
     entityId: requestId,
     sendEmail: true,
   });
+
+  const stakeholderIds = await collectIrStakeholderIds(requestId, null, [
+    initiatorId,
+    ...userIds,
+  ]);
+  const broadcastIds = stakeholderIds.filter((id) => !userIds.includes(id));
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title: 'Inspection request submitted',
+      message: `Inspection request ${requestNumber} was submitted${by} and is awaiting Request Approver forward.`,
+      type: 'request_submitted',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
 }
 
 /**
@@ -322,8 +341,8 @@ export async function notifyPart1ApproverAfterRequestApproverForward(
   if (r.rows[0]) {
     await createNotification({
       userId: r.rows[0].id,
-      title: 'IR awaiting Part I approval',
-      message: `Inspection request ${requestNumber} was forwarded by ${by} and awaits your Part I approval.${commentNote}`,
+      title: 'IR awaiting pending forward to QA Head',
+      message: `Inspection request ${requestNumber} was forwarded by ${by} and is awaiting pending forward to QA Head.${commentNote}`,
       type: 'request_submitted',
       entityType: 'inspection_request',
       entityId: requestId,
@@ -332,23 +351,36 @@ export async function notifyPart1ApproverAfterRequestApproverForward(
   }
 
   await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-    title: 'Forwarded for Part I approval',
-    message: `Your inspection request ${requestNumber} was forwarded by ${by} and is awaiting Part I approval.`,
+    title: 'Awaiting pending forward to QA Head',
+    message: `Your inspection request ${requestNumber} was forwarded by ${by} and is awaiting pending forward to QA Head.`,
     type: 'request_submitted',
     sendEmail: true,
   });
+
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'IR forwarded — awaiting pending forward to QA Head',
+      message: `Inspection request ${requestNumber} was forwarded by ${by} and is awaiting pending forward to QA Head.${commentNote}`,
+      type: 'request_submitted',
+    },
+    {
+      extraUserIds: initiatorId != null ? [initiatorId] : [],
+      excludeUserId: initiatorId ?? r.rows[0]?.id ?? null,
+    }
+  );
 }
 
 /**
- * Notify about inspection request assignment
+ * Notify about inspection request assignment — assigned inspector (action) + all stakeholders.
  */
 export async function notifyInspectionRequestAssigned(
   requestId: number,
   requestNumber: string,
   inspectorId: number,
-  initiatorId: number
+  initiatorId: number,
+  excludeUserId?: number | null
 ): Promise<void> {
-  // Notify inspector
   await createNotification({
     userId: inspectorId,
     title: 'Inspection Request Assigned',
@@ -359,19 +391,25 @@ export async function notifyInspectionRequestAssigned(
     sendEmail: true,
   });
 
-  // Notify initiator
-  await createNotification({
-    userId: initiatorId,
-    title: 'Inspection Request Assigned',
-    message: `Your inspection request ${requestNumber} has been assigned to an inspector.`,
-    type: 'request_assigned',
-    entityType: 'inspection_request',
-    entityId: requestId,
-  });
+  const stakeholderIds = await collectIrStakeholderIds(requestId, excludeUserId, [
+    initiatorId,
+    inspectorId,
+  ]);
+  const broadcastIds = stakeholderIds.filter((id) => id !== inspectorId);
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title: 'Inspection Request Assigned',
+      message: `Inspection request ${requestNumber} has been assigned to an inspector.`,
+      type: 'request_assigned',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
 }
 
 /**
- * Notify about inspection completion
+ * Notify about inspection completion — action to Team Head + broadcast to all IR stakeholders.
  */
 export async function notifyInspectionCompleted(
   requestId: number,
@@ -379,19 +417,8 @@ export async function notifyInspectionCompleted(
   initiatorId: number,
   approverId?: number,
   nominatedTeamHeadId?: number | null,
-  options?: { skipPart2Part3?: boolean }
+  options?: { skipPart2Part3?: boolean; excludeUserId?: number | null }
 ): Promise<void> {
-  // Notify initiator
-  await createNotification({
-    userId: initiatorId,
-    title: 'Inspection Completed',
-    message: `Inspection ${requestNumber} has been completed and is awaiting approval.`,
-    type: 'inspection_completed',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
-
   if (options?.skipPart2Part3) {
     const { listActiveRqaTeamHeadUserIds } = await import('@/lib/rqa-users');
     const teamHeadIds = await listActiveRqaTeamHeadUserIds();
@@ -405,43 +432,27 @@ export async function notifyInspectionCompleted(
         sendEmail: true,
       });
     }
-    return;
-  }
-
-  const teamHeadId =
-    nominatedTeamHeadId != null && Number(nominatedTeamHeadId) > 0
-      ? Number(nominatedTeamHeadId)
-      : null;
-
-  if (teamHeadId) {
-    await createNotification({
-      userId: teamHeadId,
-      title: 'Inspection Ready for Approval',
-      message: `Inspection ${requestNumber} has been completed and is ready for your approval as Team Head – QA.`,
-      type: 'inspection_completed',
-      entityType: 'inspection_request',
-      entityId: requestId,
-      sendEmail: true,
-    });
-  } else if (approverId) {
-    await createNotification({
-      userId: approverId,
-      title: 'Inspection Ready for Approval',
-      message: `Inspection ${requestNumber} has been completed and is ready for your approval.`,
-      type: 'inspection_completed',
-      entityType: 'inspection_request',
-      entityId: requestId,
-      sendEmail: true,
-    });
   } else {
-    const qaHeadResult = await pool.query(
-      `SELECT id FROM users WHERE role = 'qa_head' AND COALESCE(status, 'active') = 'active'`
-    );
-    const qaHeadIds = qaHeadResult.rows.map((row: { id: number }) => row.id);
-    if (qaHeadIds.length > 0) {
-      await createBulkNotifications(qaHeadIds, {
+    const teamHeadId =
+      nominatedTeamHeadId != null && Number(nominatedTeamHeadId) > 0
+        ? Number(nominatedTeamHeadId)
+        : null;
+
+    if (teamHeadId) {
+      await createNotification({
+        userId: teamHeadId,
         title: 'Inspection Ready for Approval',
-        message: `Inspection ${requestNumber} has been completed and is ready for approval (no Team Head – QA nominated).`,
+        message: `Inspection ${requestNumber} has been completed and is ready for your approval as Team Head – QA.`,
+        type: 'inspection_completed',
+        entityType: 'inspection_request',
+        entityId: requestId,
+        sendEmail: true,
+      });
+    } else if (approverId) {
+      await createNotification({
+        userId: approverId,
+        title: 'Inspection Ready for Approval',
+        message: `Inspection ${requestNumber} has been completed and is ready for your approval.`,
         type: 'inspection_completed',
         entityType: 'inspection_request',
         entityId: requestId,
@@ -449,63 +460,80 @@ export async function notifyInspectionCompleted(
       });
     }
   }
+
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Completed',
+      message: `Inspection ${requestNumber} has been completed and is awaiting Team Head – QA Approve & Close.`,
+      type: 'inspection_completed',
+    },
+    {
+      excludeUserId: options?.excludeUserId,
+      extraUserIds: [initiatorId, approverId, nominatedTeamHeadId].filter(Boolean),
+    }
+  );
 }
 
 /**
- * Notify about inspection approval
+ * Notify about inspection approval — all IR stakeholders.
  */
 export async function notifyInspectionApproved(
   requestId: number,
   requestNumber: string,
   initiatorId: number,
-  inspectorId?: number
+  inspectorId?: number,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const userIds = [initiatorId];
-  if (inspectorId) userIds.push(inspectorId);
-
-  await createBulkNotifications(userIds, {
-    title: 'Inspection Approved',
-    message: `Inspection request ${requestNumber} has been approved.`,
-    type: 'request_approved',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Approved',
+      message: `Inspection request ${requestNumber} has been approved.`,
+      type: 'request_approved',
+    },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, inspectorId].filter(Boolean),
+    }
+  );
 }
 
 /**
- * Notify about inspection rejection
+ * Notify about inspection rejection — all IR stakeholders.
  */
 export async function notifyInspectionRejected(
   requestId: number,
   requestNumber: string,
   initiatorId: number,
   inspectorId?: number,
-  reason?: string
+  reason?: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
   const message = reason
     ? `Inspection request ${requestNumber} has been rejected. Reason: ${reason}`
     : `Inspection request ${requestNumber} has been rejected.`;
 
-  const userIds = [initiatorId];
-  if (inspectorId) userIds.push(inspectorId);
-
-  await createBulkNotifications(userIds, {
-    title: 'Inspection Rejected',
-    message,
-    type: 'request_rejected',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Rejected',
+      message,
+      type: 'request_rejected',
+    },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, inspectorId, ...extraUserIds].filter(Boolean),
+    }
+  );
 }
 
 /**
  * Notify about overdue inspection
  */
 /**
- * QA Head returned IR to designer (Section 22). Notify initiator, Design Request Approver,
- * nominated Team Head – QA, and all QA Heads (R&QA visibility).
+ * QA Head returned IR to designer (Section 22) — notify all IR stakeholders.
  */
 export async function notifyReturnedToDesignerByQaHead(
   requestId: number,
@@ -514,34 +542,32 @@ export async function notifyReturnedToDesignerByQaHead(
   requestApproverId: number | null,
   nominatedTeamHeadQaId: number | null,
   returnComments: string,
-  qaHeadActorName: string
+  qaHeadActorName: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
   const snippet =
     returnComments.length > 200 ? `${returnComments.slice(0, 200)}…` : returnComments;
   const message = `Inspection request ${requestNumber} was returned to the designer/initiator by ${qaHeadActorName}. Comments: ${snippet}`;
 
-  const ids = new Set<number>([initiatorId]);
-  if (nominatedTeamHeadQaId) ids.add(nominatedTeamHeadQaId);
-  if (requestApproverId) ids.add(requestApproverId);
-
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'qa_head' AND status = 'active'`
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection request returned to designer',
+      message,
+      type: 'returned_to_designer',
+    },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, requestApproverId, nominatedTeamHeadQaId, ...extraUserIds].filter(
+        Boolean
+      ),
+    }
   );
-  heads.rows.forEach((r: { id: number }) => ids.add(r.id));
-
-  await createBulkNotifications(Array.from(ids), {
-    title: 'Inspection request returned to designer',
-    message,
-    type: 'returned_to_designer',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
 }
 
 /**
- * Nominated Team Head – QA sent the IR back to initiator/designer (Part I corrections).
- * Notifies initiator, Request Approver, QA Heads, and previously assigned inspectors.
+ * Nominated Team Head – QA sent the IR back to initiator/designer — all IR stakeholders.
  */
 export async function notifyQaApproverSendBack(
   requestId: number,
@@ -551,7 +577,9 @@ export async function notifyQaApproverSendBack(
   returnComments: string,
   actorName: string,
   target: 'initiator' | 'designer',
-  inspectorUserIds: number[]
+  inspectorUserIds: number[],
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
   const snippet =
     returnComments.length > 200 ? `${returnComments.slice(0, 200)}…` : returnComments;
@@ -561,35 +589,25 @@ export async function notifyQaApproverSendBack(
       : 'the initiator (Part I account holder)';
   const message = `Inspection request ${requestNumber} was sent back by Team Head – QA ${actorName} for ${audience}. Comments: ${snippet}`;
 
-  const ids = new Set<number>([initiatorId]);
-  if (requestApproverId) ids.add(requestApproverId);
-  for (const uid of inspectorUserIds) {
-    if (Number.isFinite(uid) && uid > 0) ids.add(uid);
-  }
-
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'qa_head' AND status = 'active'`
-  );
-  heads.rows.forEach((r: { id: number }) => ids.add(r.id));
-
   const title =
     target === 'designer'
       ? 'IR sent back — designer / Part I'
       : 'IR sent back — initiator';
 
-  await createBulkNotifications(Array.from(ids), {
-    title,
-    message,
-    type: 'returned_to_designer',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    { title, message, type: 'returned_to_designer' },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, requestApproverId, ...inspectorUserIds, ...extraUserIds].filter(
+        Boolean
+      ),
+    }
+  );
 }
 
 /**
- * Assigned ORDAQA person (Sections 24–25) sent the IR back for Part I corrections.
- * Notifies initiator, Request Approver, QA Heads, ORDAQA Heads, and assigned R&QA inspectors.
+ * Assigned ORDAQA person sent the IR back for Part I corrections — all IR stakeholders.
  */
 export async function notifyOrdaqaInspectorSendBack(
   requestId: number,
@@ -599,7 +617,8 @@ export async function notifyOrdaqaInspectorSendBack(
   returnComments: string,
   actorName: string,
   target: 'initiator' | 'designer',
-  inspectorUserIds: number[]
+  inspectorUserIds: number[],
+  excludeUserId?: number | null
 ): Promise<void> {
   const snippet =
     returnComments.length > 200 ? `${returnComments.slice(0, 200)}…` : returnComments;
@@ -609,170 +628,129 @@ export async function notifyOrdaqaInspectorSendBack(
       : 'the initiator (Part I account holder)';
   const message = `Inspection request ${requestNumber} was sent back by ORDAQA assignee ${actorName} for ${audience}. Comments: ${snippet}`;
 
-  const ids = new Set<number>([initiatorId]);
-  if (requestApproverId) ids.add(requestApproverId);
-  for (const uid of inspectorUserIds) {
-    if (Number.isFinite(uid) && uid > 0) ids.add(uid);
-  }
-
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role IN ('qa_head', 'ordaqa_head') AND status = 'active'`
-  );
-  heads.rows.forEach((r: { id: number }) => ids.add(r.id));
-
   const title =
     target === 'designer'
       ? 'IR sent back — designer / Part I (ORDAQA)'
       : 'IR sent back — initiator (ORDAQA)';
 
-  await createBulkNotifications(Array.from(ids), {
-    title,
-    message,
-    type: 'returned_to_designer',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    { title, message, type: 'returned_to_designer' },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, requestApproverId, ...inspectorUserIds].filter(Boolean),
+    }
+  );
 }
 
-/** After initiator resubmits an IR that had previously been in the QA pipeline, notify QA Heads. */
+/** After initiator resubmits an IR that had previously been in the QA pipeline — all stakeholders. */
 export async function notifyQaHeadsResubmittedAfterReturn(
   requestId: number,
-  requestNumber: string
+  requestNumber: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'qa_head' AND status = 'active'`
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection request resubmitted',
+      message: `Inspection request ${requestNumber} was updated by the initiator and submitted again for Request Approver forward, then QA Head (Part II).`,
+      type: 'ir_resubmitted_after_return',
+    },
+    { excludeUserId }
   );
-  const userIds = heads.rows.map((r: { id: number }) => r.id);
-  if (userIds.length === 0) return;
-
-  await createBulkNotifications(userIds, {
-    title: 'Inspection request resubmitted',
-    message: `Inspection request ${requestNumber} was updated by the initiator and submitted again for Request Approver forward, then QA Head (Part II).`,
-    type: 'ir_resubmitted_after_return',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
 }
 
 /**
- * After Part I is approved (status → `request_approved`), notify QA Heads for Part II.
+ * After Part I is approved (status → `request_approved`) — notify all IR stakeholders (incl. QA Heads).
  */
 export async function notifyQaHeadsAfterRequestApproverForward(
   requestId: number,
   requestNumber: string,
   forwardedByName: string,
   initiatorId?: number | null,
-  forwardComment?: string | null
+  forwardComment?: string | null,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'qa_head' AND COALESCE(status, 'active') = 'active'`
-  );
-  const userIds = heads.rows.map((r: { id: number }) => r.id);
   const by = forwardedByName.trim() || 'Request Approver';
   const commentNote =
     forwardComment?.trim()
       ? ` Comment: ${forwardComment.trim()}`
       : '';
 
-  if (userIds.length > 0) {
-    await createBulkNotifications(userIds, {
+  await notifyIrStakeholders(
+    requestId,
+    {
       title: 'IR forwarded to QA Head',
       message: `Inspection request ${requestNumber} was forwarded by ${by}. Complete Part II (QA Head) when ready.${commentNote}`,
       type: 'forwarded_to_qa_head',
-      entityType: 'inspection_request',
-      entityId: requestId,
-      sendEmail: true,
-    });
-  }
-
-  await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-    title: 'IR forwarded to QA Head',
-    message: `Your inspection request ${requestNumber} was forwarded by ${by} and is with QA Head (Part II).`,
-    type: 'forwarded_to_qa_head',
-    sendEmail: true,
-  });
+    },
+    {
+      excludeUserId,
+      extraUserIds: initiatorId != null ? [initiatorId] : [],
+    }
+  );
 }
 
 /**
- * After QA Head saves Part II Step 1 with Forward to ORDAQA enabled,
- * notify all active ORDAQA Heads (bell + optional email). Call only when newly forwarded.
+ * After QA Head forwards to ORDAQA — notify all IR stakeholders (incl. ORDAQA Heads).
  */
 export async function notifyOrdaqaHeadsForwardedToOrdaqa(
   requestId: number,
   requestNumber: string,
-  initiatorId?: number | null
+  initiatorId?: number | null,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'ordaqa_head' AND COALESCE(status, 'active') = 'active'`
-  );
-  const userIds = heads.rows.map((r: { id: number }) => r.id);
-
-  if (userIds.length > 0) {
-    await createBulkNotifications(userIds, {
+  await notifyIrStakeholders(
+    requestId,
+    {
       title: 'IR forwarded to ORDAQA',
-      message: `Inspection request ${requestNumber} was forwarded to ORDAQA for joint inspection. Complete Part III (Section 23) when ready.`,
+      message: `Inspection request ${requestNumber} was forwarded to ORDAQA for joint inspection. Part III (Section 23) will be available after Outstation details (if enabled) are completed.`,
       type: 'forwarded_to_ordaqa',
-      entityType: 'inspection_request',
-      entityId: requestId,
-      sendEmail: true,
-    });
-  }
-
-  await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-    title: 'IR forwarded to ORDAQA',
-    message: `Your inspection request ${requestNumber} was forwarded to ORDAQA for joint inspection.`,
-    type: 'forwarded_to_ordaqa',
-    sendEmail: true,
-  });
+    },
+    {
+      excludeUserId,
+      extraUserIds: initiatorId != null ? [initiatorId] : [],
+    }
+  );
 }
 
 /**
- * After ORDAQA Head saves Part III Section 23 with Memo to be Returned = Yes,
- * notify QA Heads so they can review Part II and re-forward to ORDAQA when ready.
+ * After ORDAQA Head marks Memo to be Returned — notify every stakeholder involved in the IR.
  */
 export async function notifyQaHeadsMemoReturnedFromOrdaqa(
   requestId: number,
   requestNumber: string,
   ordaqaHeadName: string,
-  initiatorId?: number | null
+  initiatorId?: number | null,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'qa_head' AND COALESCE(status, 'active') = 'active'`
-  );
-  const userIds = heads.rows.map((r: { id: number }) => r.id);
   const by = ordaqaHeadName.trim() || 'ORDAQA Head';
 
-  if (userIds.length > 0) {
-    await createBulkNotifications(userIds, {
-      title: 'Memo returned — review Part II',
-      message: `Inspection request ${requestNumber}: ${by} marked the memo for return in Part III (Section 23). Review Part II and re-forward to ORDAQA when ready.`,
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Memo returned to QA Head',
+      message: `Inspection request ${requestNumber}: ${by} marked Memo to be Returned as Yes in Part III (Section 23). The request has been returned to QA Head for Part II review.`,
       type: 'memo_returned_to_qa_head',
-      entityType: 'inspection_request',
-      entityId: requestId,
-      sendEmail: true,
-    });
-  }
-
-  await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-    title: 'Memo returned to QA Head',
-    message: `Your inspection request ${requestNumber}: ORDAQA returned the memo to QA Head for Part II review.`,
-    type: 'memo_returned_to_qa_head',
-    sendEmail: true,
-  });
+    },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, ...extraUserIds],
+    }
+  );
 }
 
 /**
- * After QA Head saves Part II Step 1 with a nominated Team Head – QA (`qa_approver`),
- * notify that user (bell + optional email). Call only when the nomination is new or changed.
+ * After QA Head nominates Team Head – QA — action notify to nominee + broadcast to all stakeholders.
  */
 export async function notifyNominatedTeamHeadQaPart2(
   requestId: number,
   requestNumber: string,
   nominatedTeamHeadUserId: number,
   nominatorName?: string,
-  initiatorId?: number | null
+  initiatorId?: number | null,
+  excludeUserId?: number | null
 ): Promise<void> {
   if (!nominatedTeamHeadUserId || nominatedTeamHeadUserId < 1) return;
   const r = await pool.query(
@@ -795,29 +773,46 @@ export async function notifyNominatedTeamHeadQaPart2(
     sendEmail: true,
   });
 
-  await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-    title: 'Team Head – QA nominated',
-    message: `Your inspection request ${requestNumber}: ${who} nominated ${teamHeadName} as Team Head – QA. Inspector(s) will be assigned next.`,
-    type: 'team_head_qa_nominated',
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Team Head – QA nominated',
+      message: `Inspection request ${requestNumber}: ${who} nominated ${teamHeadName} as Team Head – QA. Inspector(s) will be assigned next.`,
+      type: 'team_head_qa_nominated',
+    },
+    {
+      excludeUserId: excludeUserId ?? nominatedTeamHeadUserId,
+      extraUserIds: initiatorId != null ? [initiatorId] : [],
+    }
+  );
 }
 
 /**
- * After assignee saves Part V — notify all ORDAQA Heads to approve Sections 24–25.
+ * After assignee saves Part V — notify IR stakeholders except ORDAQA Inspectors
+ * (this is an ORDAQA Head action, not an inspector action).
  */
 export async function notifyOrdaqaHeadsPart5PendingApproval(
   requestId: number,
-  requestNumber: string
+  requestNumber: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const heads = await pool.query(
-    `SELECT id FROM users WHERE role = 'ordaqa_head' AND COALESCE(status, 'active') = 'active'`
-  );
-  const userIds = heads.rows.map((r: { id: number }) => r.id);
-  if (userIds.length === 0) return;
+  const ids = await collectIrStakeholderIds(requestId, excludeUserId);
+  if (ids.length === 0) return;
 
-  await createBulkNotifications(userIds, {
-    title: 'Part V pending your approval',
+  const inspectorRows = await pool.query(
+    `SELECT id FROM users
+     WHERE id = ANY($1::int[])
+       AND role = 'ordaqa_inspector'`,
+    [ids]
+  );
+  const inspectorSet = new Set(
+    inspectorRows.rows.map((r: { id: number }) => Number(r.id)).filter((n) => Number.isFinite(n) && n > 0)
+  );
+  const recipients = ids.filter((id) => !inspectorSet.has(id));
+  if (recipients.length === 0) return;
+
+  await createBulkNotifications(recipients, {
+    title: 'Part V pending ORDAQA Head approval',
     message: `Inspection request ${requestNumber}: Part V (Sections 24–25) was submitted and awaits ORDAQA Head approval.`,
     type: 'part5_pending_ordaqa_approval',
     entityType: 'inspection_request',
@@ -827,14 +822,15 @@ export async function notifyOrdaqaHeadsPart5PendingApproval(
 }
 
 /**
- * After ORDAQA Head approves Part V — notify Team Head – QA that Part V is complete.
+ * After ORDAQA Head approves Part V — notify Team Head – QA (action) + all IR stakeholders.
  */
 export async function notifyTeamHeadPart5ApprovedForInspection(
   requestId: number,
   requestNumber: string,
   nominatedTeamHeadId: number | null | undefined,
   skipsPart2Part3: boolean,
-  ordaqaHeadName?: string
+  ordaqaHeadName?: string,
+  excludeUserId?: number | null
 ): Promise<void> {
   const recipientIds = new Set<number>();
 
@@ -845,121 +841,128 @@ export async function notifyTeamHeadPart5ApprovedForInspection(
     recipientIds.add(Number(nominatedTeamHeadId));
   }
 
-  if (recipientIds.size === 0) return;
-
   const who = (ordaqaHeadName && String(ordaqaHeadName).trim()) || 'ORDAQA Head';
 
-  await createBulkNotifications(Array.from(recipientIds), {
-    title: 'ORDAQA Head approved Part V',
-    message: `Inspection request ${requestNumber}: ${who} has approved Part V. The IR is ready for your review.`,
-    type: 'part5_approved_start_inspection',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  if (recipientIds.size > 0) {
+    await createBulkNotifications(Array.from(recipientIds), {
+      title: 'ORDAQA Head approved Part V',
+      message: `Inspection request ${requestNumber}: ${who} has approved Part V. The IR is ready for your review.`,
+      type: 'part5_approved_start_inspection',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  const stakeholderIds = await collectIrStakeholderIds(
+    requestId,
+    excludeUserId,
+    Array.from(recipientIds)
+  );
+  const broadcastIds = stakeholderIds.filter((id) => !recipientIds.has(id));
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title: 'ORDAQA Head approved Part V',
+      message: `Inspection request ${requestNumber}: ${who} has approved Part V.`,
+      type: 'part5_approved_start_inspection',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
 }
 
 /**
- * After ORDAQA Head sends Part V back — notify the assigned ORDAQA inspector to revise and resubmit.
+ * After ORDAQA Head sends Part V back — notify assignee (action) + all IR stakeholders.
  */
 export async function notifyOrdaqaAssigneePart5SentBack(
   requestId: number,
   requestNumber: string,
   assigneeUserId: number | null | undefined,
   headName: string,
-  commentSnippet: string
+  commentSnippet: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  if (!assigneeUserId || assigneeUserId < 1) return;
   const who = (headName && String(headName).trim()) || 'ORDAQA Head';
   const snippet =
     commentSnippet.length > 200 ? `${commentSnippet.slice(0, 200)}…` : commentSnippet;
-  await createNotification({
-    userId: assigneeUserId,
-    title: 'Part V sent back for revision',
-    message: `Inspection request ${requestNumber}: ${who} sent back Part V (Sections 24–25) for your revision. Comments: ${snippet}`,
-    type: 'part5_head_send_back',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  const message = `Inspection request ${requestNumber}: ${who} sent back Part V (Sections 24–25) for revision. Comments: ${snippet}`;
+
+  if (assigneeUserId && assigneeUserId > 0) {
+    await createNotification({
+      userId: assigneeUserId,
+      title: 'Part V sent back for revision',
+      message: `Inspection request ${requestNumber}: ${who} sent back Part V (Sections 24–25) for your revision. Comments: ${snippet}`,
+      type: 'part5_head_send_back',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Part V sent back for revision',
+      message,
+      type: 'part5_head_send_back',
+    },
+    {
+      excludeUserId: excludeUserId ?? assigneeUserId,
+      extraUserIds: assigneeUserId ? [assigneeUserId] : [],
+    }
+  );
 }
 
 /**
- * After ORDAQA Head approves Part V — notify the assignee who saved Sections 24–25.
+ * After ORDAQA Head approves Part V — notify all IR stakeholders.
  */
 export async function notifyOrdaqaAssigneePart5Approved(
   requestId: number,
   requestNumber: string,
   assigneeUserId: number | null | undefined,
-  approverName?: string
+  approverName?: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  if (!assigneeUserId || assigneeUserId < 1) return;
   const who = (approverName && String(approverName).trim()) || 'ORDAQA Head';
-  await createNotification({
-    userId: assigneeUserId,
-    title: 'Part V approved by ORDAQA Head',
-    message: `Inspection request ${requestNumber}: Part V (Sections 24–25) was approved by ${who}.`,
-    type: 'part5_ordaqa_approved',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Part V approved by ORDAQA Head',
+      message: `Inspection request ${requestNumber}: Part V (Sections 24–25) was approved by ${who}.`,
+      type: 'part5_ordaqa_approved',
+    },
+    {
+      excludeUserId,
+      extraUserIds: assigneeUserId ? [assigneeUserId] : [],
+    }
+  );
 }
 
 /**
- * After ORDAQA Head completes Part III (Section 23), notify each Part II–assigned Inspector / QA Rep.
+ * After ORDAQA Head completes Part III (Section 23) — notify all IR stakeholders.
  */
 export async function notifyPart2InspectorsPart3Completed(
   requestId: number,
   requestNumber: string,
   inspectorUserIds: unknown[],
   ordaqaHeadName?: string,
-  initiatorId?: number | null
+  initiatorId?: number | null,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const ids = [
-    ...new Set(
-      inspectorUserIds
-        .map((x) => parseInt(String(x), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    ),
-  ];
-  if (ids.length === 0) return;
-
-  const result = await pool.query(
-    `SELECT id FROM users WHERE id = ANY($1::int[]) AND role = 'inspector' AND COALESCE(status, 'active') = 'active'`,
-    [ids]
-  );
-  const validIds = result.rows.map((r: { id: number }) => r.id);
   const who = (ordaqaHeadName && String(ordaqaHeadName).trim()) || 'ORDAQA Head';
-
-  if (validIds.length === 0) {
-    await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-      title: 'ORDAQA Part III completed',
-      message: `Your inspection request ${requestNumber}: ${who} completed Part III (Section 23).`,
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: `Part III completed by ${who}`,
+      message: `Inspection request ${requestNumber}: ORDAQA Head completed Part III (Section 23). Assigned R&QA Inspector(s) may complete Part IV when ready.`,
       type: 'part3_completed',
-      sendEmail: true,
-    });
-    return;
-  }
-
-  await createBulkNotifications(validIds, {
-    title: `Part III completed by ${who}`,
-    message: `Inspection request ${requestNumber}: ORDAQA Head completed Part III (Section 23). Complete Part IV (R&QA inspection report) when ready.`,
-    type: 'part3_completed',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
-
-  if (initiatorId != null && Number(initiatorId) > 0) {
-    const names = await lookupUserNames(validIds);
-    await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
-      title: 'ORDAQA Part III completed',
-      message: `Your inspection request ${requestNumber}: ${who} completed Part III. ${names} notified to complete Part IV.`,
-      type: 'part3_completed',
-      sendEmail: true,
-    });
-  }
+    },
+    {
+      excludeUserId,
+      extraUserIds: [...normalizePositiveIds(inspectorUserIds), initiatorId].filter(Boolean),
+    }
+  );
 }
 
 /**
@@ -1056,14 +1059,17 @@ export async function notifyStakeholdersOrdaqaDelegatedToRqa(params: {
 }
 
 /**
- * After Part II — Team Head assigns Inspector(s) / QA Rep(s), notify each assigned active `inspector` user.
+ * After Part II — Team Head assigns Inspector(s) / QA Rep(s).
+ * Action notify to assigned inspectors + broadcast to all other IR stakeholders.
  */
 export async function notifyInspectorsAssignedPart2(
   requestId: number,
   requestNumber: string,
   inspectorUserIds: unknown[],
   initiatorId?: number | null,
-  teamHeadName?: string
+  teamHeadName?: string,
+  outstationEnabled?: boolean,
+  excludeUserId?: number | null
 ): Promise<void> {
   const ids = normalizePositiveIds(inspectorUserIds);
   if (ids.length === 0) return;
@@ -1076,22 +1082,32 @@ export async function notifyInspectorsAssignedPart2(
   if (validIds.length === 0) return;
 
   const teamHead = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
+  const nextSteps = outstationEnabled
+    ? 'Complete Part II Outstation details (Email Sent, Name & Sign, Date & Time), then Part IV when ready.'
+    : 'Complete Part IV when ready.';
+  const names = await lookupUserNames(validIds);
 
   await createBulkNotifications(validIds, {
     title: `Assigned as Inspector / QA Rep by ${teamHead}`,
-    message: `Inspection request ${requestNumber}: You were assigned on Part II. Complete inspector Part II Outstation inspection details and part-4.`,
+    message: `Inspection request ${requestNumber}: You were assigned on Part II. ${nextSteps}`,
     type: 'part2_inspector_assigned',
     entityType: 'inspection_request',
     entityId: requestId,
     sendEmail: true,
   });
 
-  if (initiatorId != null && Number(initiatorId) > 0) {
-    const names = await lookupUserNames(validIds);
-    await notifyInitiatorIrMilestone(initiatorId, requestId, requestNumber, {
+  const stakeholderIds = await collectIrStakeholderIds(requestId, excludeUserId, [
+    initiatorId,
+    ...validIds,
+  ]);
+  const broadcastIds = stakeholderIds.filter((id) => !validIds.includes(id));
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
       title: 'Inspector(s) assigned',
-      message: `Your inspection request ${requestNumber}: ${names} assigned as Inspector / QA Rep.`,
+      message: `Inspection request ${requestNumber}: ${names} assigned as Inspector / QA Rep by ${teamHead}.`,
       type: 'part2_inspector_assigned',
+      entityType: 'inspection_request',
+      entityId: requestId,
       sendEmail: true,
     });
   }
@@ -1107,7 +1123,8 @@ export async function notifyInspectorsReassignedPart2(
   previousInspectorIds: unknown[],
   nextInspectorIds: unknown[],
   initiatorId?: number | null,
-  teamHeadName?: string
+  teamHeadName?: string,
+  outstationEnabled?: boolean
 ): Promise<void> {
   const previousIds = normalizePositiveIds(previousInspectorIds);
   const nextIds = normalizePositiveIds(nextInspectorIds);
@@ -1155,10 +1172,13 @@ export async function notifyInspectorsReassignedPart2(
     );
     const validAddedIds = activeAdded.rows.map((r: { id: number }) => r.id);
     if (validAddedIds.length > 0) {
+      const nextSteps = outstationEnabled
+        ? 'Complete Part II Outstation details (Email Sent, Name & Sign, Date & Time), then Part IV when ready.'
+        : 'Complete Part IV when ready.';
       const addedMessage =
         removedIds.length > 0
-          ? `Inspection request ${requestNumber}: ${removedNames} ${removedIds.length > 1 ? 'have' : 'has'} been replaced with you. Complete inspector Part II Outstation inspection details and part-4.`
-          : `Inspection request ${requestNumber}: You were assigned on Part II by ${teamHead}. Complete inspector Part II Outstation inspection details and part-4.`;
+          ? `Inspection request ${requestNumber}: ${removedNames} ${removedIds.length > 1 ? 'have' : 'has'} been replaced with you. ${nextSteps}`
+          : `Inspection request ${requestNumber}: You were assigned on Part II by ${teamHead}. ${nextSteps}`;
 
       await createBulkNotifications(validAddedIds, {
         title:
@@ -1185,6 +1205,249 @@ export async function notifyInspectorsReassignedPart2(
       sendEmail: true,
     });
   }
+
+  // Broadcast to all other IR stakeholders (exclude already-notified inspectors + initiator)
+  const alreadyNotified = new Set<number>([...removedIds, ...addedIds]);
+  if (initiatorId != null && Number(initiatorId) > 0) alreadyNotified.add(Number(initiatorId));
+  const stakeholderIds = await collectIrStakeholderIds(requestId, null, [
+    ...previousIds,
+    ...nextIds,
+    initiatorId,
+  ]);
+  const broadcastIds = stakeholderIds.filter((id) => !alreadyNotified.has(id));
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title:
+        removedIds.length > 0 && addedIds.length > 0
+          ? 'Inspector / QA Rep replaced'
+          : 'Inspector assignment updated',
+      message: `Inspection request ${requestNumber}: ${replacementSummary}.`,
+      type: 'part2_inspector_replaced',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+}
+
+/**
+ * Collect user ids involved in an IR (initiator, certifiers, Team Head, inspectors,
+ * ORDAQA assignees/approvers, Forward Request user, activity actors, observation
+ * chat participants, plus active QA / ORDAQA Heads).
+ */
+function addPart2InvolvedUserIds(add: (uid: unknown) => void, part2: unknown): void {
+  let p: Record<string, unknown> = {};
+  if (part2 && typeof part2 === 'object' && !Array.isArray(part2)) {
+    p = part2 as Record<string, unknown>;
+  } else if (typeof part2 === 'string' && part2.trim()) {
+    try {
+      const o = JSON.parse(part2);
+      if (o && typeof o === 'object' && !Array.isArray(o)) p = o as Record<string, unknown>;
+    } catch {
+      p = {};
+    }
+  }
+  add(p.inspector_send_back_by);
+  add(p.inspector_rejected_by);
+  for (const id of parseInspectorIds(p.previous_inspector_ids)) add(id);
+  if (Array.isArray(p.return_history)) {
+    for (const entry of p.return_history) {
+      if (entry && typeof entry === 'object') {
+        add((entry as Record<string, unknown>).by_user_id);
+      }
+    }
+  }
+}
+
+export async function collectIrStakeholderIds(
+  requestId: number,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
+): Promise<number[]> {
+  const exclude = excludeUserId != null ? Number(excludeUserId) : NaN;
+  const recipientIds = new Set<number>();
+  const add = (uid: unknown) => {
+    const n = uid != null ? Number(uid) : NaN;
+    if (Number.isFinite(n) && n > 0 && n !== exclude) recipientIds.add(n);
+  };
+
+  for (const uid of extraUserIds) add(uid);
+
+  const irRes = await pool.query(
+    `SELECT initiator_id, request_approver_id, nominated_request_approver_id,
+            nominated_team_head_id, qa_approver_id, part1_approved_by,
+            inspector_id, inspector_ids, ordaqa_inspector_id, ordaqa_approver_id,
+            final_qa_approver_id, approver_id, part2_data, part3_completed_by,
+            part4_completed_by
+     FROM inspection_requests WHERE id = $1`,
+    [requestId]
+  );
+  const row = irRes.rows[0] as Record<string, unknown> | undefined;
+  if (row) {
+    add(row.initiator_id);
+    add(row.request_approver_id);
+    add(row.nominated_request_approver_id);
+    add(row.nominated_team_head_id);
+    add(row.qa_approver_id);
+    add(row.part1_approved_by);
+    add(row.inspector_id);
+    add(row.ordaqa_inspector_id);
+    add(row.ordaqa_approver_id);
+    add(row.final_qa_approver_id);
+    add(row.approver_id);
+    add(row.part3_completed_by);
+    add(row.part4_completed_by);
+    try {
+      const raw = row.inspector_ids;
+      const arr =
+        typeof raw === 'string'
+          ? JSON.parse(raw || '[]')
+          : Array.isArray(raw)
+            ? raw
+            : [];
+      if (Array.isArray(arr)) arr.forEach((x) => add(x));
+    } catch {
+      /* ignore */
+    }
+    addPart2InvolvedUserIds(add, row.part2_data);
+  }
+
+  // Forward Request (Part I Approver) by known employee id
+  try {
+    const part1Emp = normalizeEmployeeId(PART1_APPROVER_EMPLOYEE_ID);
+    if (part1Emp) {
+      const p1 = await pool.query(
+        `SELECT id FROM users
+         WHERE COALESCE(status, 'active') = 'active'
+           AND LOWER(REPLACE(TRIM(COALESCE(employee_id, '')), ' ', '')) = LOWER($1)
+         LIMIT 1`,
+        [part1Emp]
+      );
+      if (p1.rows[0]?.id) add(p1.rows[0].id);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const roleHeads = await pool.query(
+    `SELECT id FROM users
+     WHERE role IN ('qa_head', 'ordaqa_head')
+       AND COALESCE(status, 'active') = 'active'`
+  );
+  roleHeads.rows.forEach((r: { id: number }) => add(r.id));
+
+  try {
+    const actors = await pool.query(
+      `SELECT DISTINCT user_id FROM inspection_activities
+       WHERE inspection_request_id = $1 AND user_id IS NOT NULL`,
+      [requestId]
+    );
+    actors.rows.forEach((r: { user_id: number }) => add(r.user_id));
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const chatUsers = await pool.query(
+      `SELECT DISTINCT x.uid FROM (
+         SELECT om.sender_id AS uid
+           FROM observation_messages om
+           INNER JOIN observation_threads ot ON ot.id = om.thread_id
+          WHERE ot.inspection_request_id = $1
+         UNION
+         SELECT ot.closed_by AS uid
+           FROM observation_threads ot
+          WHERE ot.inspection_request_id = $1 AND ot.closed_by IS NOT NULL
+       ) x`,
+      [requestId]
+    );
+    chatUsers.rows.forEach((r: { uid: number }) => add(r.uid));
+  } catch {
+    /* ignore */
+  }
+
+  return Array.from(recipientIds);
+}
+
+/**
+ * Notify every stakeholder currently involved in the IR (plus optional extras).
+ * Use for approvals, rejections, send-backs, assignments, delegation, etc.
+ */
+export async function notifyIrStakeholders(
+  requestId: number,
+  payload: {
+    title: string;
+    message: string;
+    type: NotificationType;
+    sendEmail?: boolean;
+  },
+  options?: {
+    excludeUserId?: number | null;
+    extraUserIds?: unknown[];
+  }
+): Promise<void> {
+  const ids = await collectIrStakeholderIds(
+    requestId,
+    options?.excludeUserId,
+    options?.extraUserIds || []
+  );
+  if (ids.length === 0) return;
+  await createBulkNotifications(ids, {
+    title: payload.title,
+    message: payload.message,
+    type: payload.type,
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: payload.sendEmail ?? true,
+  });
+}
+
+/**
+ * R&QA Inspector rejected the IR — notify all IR stakeholders.
+ */
+export async function notifyStakeholdersInspectorOutstationRejected(
+  requestId: number,
+  requestNumber: string,
+  inspectorName: string,
+  comments: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
+): Promise<void> {
+  const who = (inspectorName && String(inspectorName).trim()) || 'R&QA Inspector';
+  const snippet = comments.length > 200 ? `${comments.slice(0, 200)}…` : comments;
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Rejected by R&QA Inspector',
+      message: `Inspection request ${requestNumber} was rejected by ${who}. Comment: ${snippet}`,
+      type: 'part2_inspector_rejected',
+    },
+    { excludeUserId, extraUserIds }
+  );
+}
+
+/**
+ * R&QA Inspector sent IR back to Team Head – QA — notify all stakeholders.
+ */
+export async function notifyStakeholdersInspectorOutstationSendBack(
+  requestId: number,
+  requestNumber: string,
+  inspectorName: string,
+  comments: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
+): Promise<void> {
+  const who = (inspectorName && String(inspectorName).trim()) || 'R&QA Inspector';
+  const snippet = comments.length > 200 ? `${comments.slice(0, 200)}…` : comments;
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Sent back to Team Head – QA by R&QA Inspector',
+      message: `Inspection request ${requestNumber}: ${who} sent the IR back to Team Head – QA. Comment: ${snippet}`,
+      type: 'part2_inspector_send_back',
+    },
+    { excludeUserId, extraUserIds }
+  );
 }
 
 /** Context from `inspection_requests` row when Part IV is saved (before/after update — IDs unchanged). */
@@ -1198,46 +1461,24 @@ export interface Part4SavedStakeholderContext {
 }
 
 /**
- * After Part IV — R&QA Inspection Report is saved, notify initiator and other assigned inspectors.
- * Team Head – QA gets a dedicated pending-approval notification (see notifyTeamHeadPart4PendingApproval).
- * Excludes the user who saved Part IV.
+ * After Part IV — R&QA Inspection Report is saved — notify all IR stakeholders.
+ * Team Head – QA also gets a dedicated pending-approval notification (see notifyTeamHeadPart4PendingApproval).
  */
 export async function notifyStakeholdersPart4Saved(
   requestId: number,
   requestNumber: string,
   savedByUserId: number,
-  ctx: Part4SavedStakeholderContext
+  _ctx?: Part4SavedStakeholderContext
 ): Promise<void> {
-  const exclude = savedByUserId;
-  const recipientIds = new Set<number>();
-
-  const add = (uid: unknown) => {
-    const n = uid != null ? Number(uid) : NaN;
-    if (Number.isFinite(n) && n > 0 && n !== exclude) recipientIds.add(n);
-  };
-
-  add(ctx.initiator_id);
-  add(ctx.inspector_id);
-
-  if (ctx.inspector_ids_raw) {
-    try {
-      const arr = JSON.parse(ctx.inspector_ids_raw);
-      if (Array.isArray(arr)) arr.forEach((x: unknown) => add(x));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  if (recipientIds.size === 0) return;
-
-  await createBulkNotifications(Array.from(recipientIds), {
-    title: 'Part IV — R&QA Inspection report submitted',
-    message: `Inspection request ${requestNumber}: Part IV (CABS R&QA Inspection Report) has been submitted and is awaiting Team Head – QA approval.`,
-    type: 'part4_saved',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Part IV — R&QA Inspection report submitted',
+      message: `Inspection request ${requestNumber}: Part IV (CABS R&QA Inspection Report) has been submitted and is awaiting Team Head – QA approval.`,
+      type: 'part4_saved',
+    },
+    { excludeUserId: savedByUserId }
+  );
 }
 
 /**
@@ -1271,88 +1512,116 @@ export async function notifyTeamHeadPart4PendingApproval(
 }
 
 /**
- * After Team Head – QA rejects Part IV — notify the inspector(s) who must revise and resubmit.
+ * After Team Head – QA rejects Part IV — notify inspectors (action) + all IR stakeholders.
  */
 export async function notifyInspectorsPart4Rejected(
   requestId: number,
   requestNumber: string,
   inspectorUserIds: unknown[],
   teamHeadName: string,
-  commentSnippet: string
+  commentSnippet: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
 ): Promise<void> {
-  const ids = [
-    ...new Set(
-      inspectorUserIds
-        .map((x) => parseInt(String(x), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    ),
-  ];
-  if (ids.length === 0) return;
-
+  const ids = normalizePositiveIds(inspectorUserIds);
   const who = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
   const snippet =
     commentSnippet.length > 200 ? `${commentSnippet.slice(0, 200)}…` : commentSnippet;
 
-  await createBulkNotifications(ids, {
-    title: 'Part IV sent back — revise and resubmit',
-    message: `Inspection request ${requestNumber}: ${who} sent Part IV back for revision. Comments: ${snippet}`,
-    type: 'part4_team_head_rejected',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  if (ids.length > 0) {
+    await createBulkNotifications(ids, {
+      title: 'Part IV sent back — revise and resubmit',
+      message: `Inspection request ${requestNumber}: ${who} sent Part IV back for revision. Comments: ${snippet}`,
+      type: 'part4_team_head_rejected',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  const stakeholderIds = await collectIrStakeholderIds(requestId, excludeUserId, [
+    ...ids,
+    ...extraUserIds,
+  ]);
+  const already = new Set(ids);
+  if (excludeUserId != null && Number(excludeUserId) > 0) already.add(Number(excludeUserId));
+  const broadcastIds = stakeholderIds.filter((id) => !already.has(id));
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title: 'Part IV sent back by Team Head – QA',
+      message: `Inspection request ${requestNumber}: ${who} sent Part IV back for revision. Comments: ${snippet}`,
+      type: 'part4_team_head_rejected',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
 }
 
 /**
- * After Team Head – QA approves Part IV — notify inspector(s).
+ * After Team Head – QA approves Part IV — notify all IR stakeholders.
  */
 export async function notifyInspectorsPart4Approved(
   requestId: number,
   requestNumber: string,
   inspectorUserIds: unknown[],
-  teamHeadName?: string
+  teamHeadName?: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const ids = [
-    ...new Set(
-      inspectorUserIds
-        .map((x) => parseInt(String(x), 10))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    ),
-  ];
-  if (ids.length === 0) return;
-
   const who = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
-
-  await createBulkNotifications(ids, {
-    title: 'Part IV approved by Team Head – QA',
-    message: `Inspection request ${requestNumber}: Part IV was approved by ${who}. You may proceed with the next workflow step.`,
-    type: 'part4_team_head_approved',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Part IV approved by Team Head – QA',
+      message: `Inspection request ${requestNumber}: Part IV was approved by ${who}.`,
+      type: 'part4_team_head_approved',
+    },
+    {
+      excludeUserId,
+      extraUserIds: normalizePositiveIds(inspectorUserIds),
+    }
+  );
 }
 
 /**
- * After Part IV is saved on an ORDAQA-forwarded IR — notify the ORDAQA assignee to complete Part V.
+ * After Part IV is saved on an ORDAQA-forwarded IR — notify ORDAQA assignee + all stakeholders.
  */
 export async function notifyOrdaqaAssigneePart4ForwardedForPart5(
   requestId: number,
   requestNumber: string,
   ordaqaAssigneeUserId: number | null | undefined,
-  part4InspectorName?: string
+  part4InspectorName?: string,
+  excludeUserId?: number | null
 ): Promise<void> {
-  if (!ordaqaAssigneeUserId || ordaqaAssigneeUserId < 1) return;
   const who = (part4InspectorName && String(part4InspectorName).trim()) || 'The assigned inspector';
-  await createNotification({
-    userId: ordaqaAssigneeUserId,
-    title: 'Part IV complete — fill Part V',
-    message: `Inspection request ${requestNumber}: ${who} has completed Part IV and forwarded the IR to you. Please fill Part V (Sections 24–25).`,
-    type: 'part4_forwarded_for_part5',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  if (ordaqaAssigneeUserId && ordaqaAssigneeUserId > 0) {
+    await createNotification({
+      userId: ordaqaAssigneeUserId,
+      title: 'Part IV complete — fill Part V',
+      message: `Inspection request ${requestNumber}: ${who} has completed Part IV and forwarded the IR to you. Please fill Part V (Sections 24–25).`,
+      type: 'part4_forwarded_for_part5',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+
+  const stakeholderIds = await collectIrStakeholderIds(requestId, excludeUserId, [
+    ordaqaAssigneeUserId,
+  ]);
+  const broadcastIds = stakeholderIds.filter(
+    (id) => id !== Number(ordaqaAssigneeUserId)
+  );
+  if (broadcastIds.length > 0) {
+    await createBulkNotifications(broadcastIds, {
+      title: 'Part IV complete — Part V pending',
+      message: `Inspection request ${requestNumber}: ${who} completed Part IV. ORDAQA assignee may now fill Part V (Sections 24–25).`,
+      type: 'part4_forwarded_for_part5',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
 }
 
 export async function notifyOverdueInspection(
@@ -1360,57 +1629,36 @@ export async function notifyOverdueInspection(
   requestNumber: string,
   dueDate: Date
 ): Promise<void> {
-  // Get all stakeholders
-  const result = await pool.query(
-    `SELECT initiator_id, inspector_id, approver_id 
-     FROM inspection_requests 
-     WHERE id = $1`,
-    [requestId]
-  );
-
-  if (result.rows.length === 0) return;
-
-  const { initiator_id, inspector_id, approver_id } = result.rows[0];
-  const stakeholderIds = new Set([initiator_id, inspector_id, approver_id].filter(Boolean) as number[]);
-
-  // Also include administrators (deduplicated)
-  const adminResult = await pool.query(
-    `SELECT id FROM users WHERE role = 'administrator' AND status = 'active'`
-  );
-  adminResult.rows.forEach((row) => stakeholderIds.add(row.id));
-
-  await createBulkNotifications(Array.from(stakeholderIds), {
+  await notifyIrStakeholders(requestId, {
     title: 'Overdue Inspection Alert',
     message: `Inspection request ${requestNumber} is overdue. Due date was ${dueDate.toLocaleDateString()}.`,
     type: 'overdue_alert',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
   });
 }
 
 /**
- * Notify about inspection closure
+ * Notify about inspection closure — all IR stakeholders.
  */
 export async function notifyInspectionClosed(
   requestId: number,
   requestNumber: string,
   initiatorId: number,
   inspectorId?: number,
-  approverId?: number
+  approverId?: number,
+  excludeUserId?: number | null
 ): Promise<void> {
-  const userIds = [initiatorId];
-  if (inspectorId) userIds.push(inspectorId);
-  if (approverId) userIds.push(approverId);
-
-  await createBulkNotifications(userIds, {
-    title: 'Inspection Closed',
-    message: `Inspection request ${requestNumber} has been officially closed.`,
-    type: 'request_closed',
-    entityType: 'inspection_request',
-    entityId: requestId,
-    sendEmail: true,
-  });
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Closed',
+      message: `Inspection request ${requestNumber} has been officially closed.`,
+      type: 'request_closed',
+    },
+    {
+      excludeUserId,
+      extraUserIds: [initiatorId, inspectorId, approverId].filter(Boolean),
+    }
+  );
 }
 
 /**

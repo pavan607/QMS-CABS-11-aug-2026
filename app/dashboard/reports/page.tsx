@@ -182,7 +182,7 @@ export default function ReportsPage() {
     closed: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
   };
 const STATUS_LABEL_MAP: Record<string, string> = {
-  draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Forward',
+  draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Part-1 Approval',
   request_approved: 'Forwarded', assigned: 'Assigned', in_progress: 'In Progress',
   inspection_completed: 'Inspection Done', completed: 'Completed',
   approved: 'Approved', rejected: 'Rejected', closed: 'Closed',

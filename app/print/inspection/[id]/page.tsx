@@ -19,6 +19,7 @@ import {
   resolvePart4TeamHeadSignoff,
   resolveAssignedInspectorsForDisplay,
   inspectionSkipsPart2Part3,
+  inspectionSkipsRqaPart2AndPart4,
   isForwardedToOrdqa,
 } from '@/lib/inspection-display';
 
@@ -104,7 +105,9 @@ export default function PrintInspectionReport() {
     { ...p5e, delegation_type: p3?.delegation_type, assigned_delegated_to: p3?.assigned_delegated_to },
     ir.ordaqa_inspector_name
   );
-  // Hide Part III when N/A (19(f) No and not forwarded/delegated to ORDAQA).
+  // Hide Part III when N/A (DGAQA/ORDAQA not involved and not forwarded/delegated to ORDAQA).
+  const showPart2 = !inspectionSkipsRqaPart2AndPart4(ir);
+  const showPart4 = showPart2;
   const showPart3 = !inspectionSkipsPart2Part3(ir) || isForwardedToOrdqa(ir);
   const showPart5 = showPart3 && isForwardedToOrdqa(ir);
 
@@ -123,7 +126,6 @@ export default function PrintInspectionReport() {
     previous_observations_status: 'c) Status of the previous observations/NCs.',
     cocs_available: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.',
     instruments_available: 'e) Applicable measuring instruments/Testing facilities are available with valid calibration certificates.',
-    joint_inspection_request: 'f) Request for Joint Inspection with ORDAQA as per approved QAP.',
   };
   const instrumentsAvailableNo = String(confirmations?.instruments_available || '').toLowerCase() === 'no';
 
@@ -248,10 +250,10 @@ export default function PrintInspectionReport() {
               </td>
             </tr>
             <tr>
-              <td className="label sub-label">Involvement (DGAQA / R&QA)</td>
+              <td className="label sub-label">Involvement (DGAQA / ORDAQA / R&QA)</td>
               <td className="value">
                 {[
-                  ir.so_involves_dgaqa ? 'DGAQA' : null,
+                  ir.so_involves_dgaqa ? 'DGAQA (ORDAQA)' : null,
                   ir.so_involves_rqa ? 'R&QA' : null,
                 ]
                   .filter(Boolean)
@@ -334,9 +336,9 @@ export default function PrintInspectionReport() {
               <tr key={key}>
                 <td style={{ fontWeight: 600, fontSize: 10 }}>{docLabels[key] || key}</td>
                 <td className="center" style={{ fontSize: 10 }}>{val?.approved === 'yes' ? 'Yes' : val?.approved === 'no' ? 'No' : val?.approved === 'na' ? 'NA' : val?.approved === 'draft' ? 'Draft' : '—'}</td>
-                <td className="center" style={{ fontSize: 10 }}>{val?.doc_no || '—'}</td>
-                <td className="center" style={{ fontSize: 10 }}>{val?.amd_no || '—'}</td>
-                <td className="center" style={{ fontSize: 10 }}>{val?.rev_no || '—'}</td>
+                <td className="center" style={{ fontSize: 10 }}>{val?.doc_no != null && String(val.doc_no).trim() !== '' ? String(val.doc_no) : '—'}</td>
+                <td className="center" style={{ fontSize: 10 }}>{val?.amd_no != null && String(val.amd_no).trim() !== '' ? String(val.amd_no) : '—'}</td>
+                <td className="center" style={{ fontSize: 10 }}>{val?.rev_no != null && String(val.rev_no).trim() !== '' ? String(val.rev_no) : '—'}</td>
                 <td className="center" style={{ fontSize: 10 }}>{val?.date ? fmtDate(val.date) : '—'}</td>
               </tr>
             )) : (
@@ -433,6 +435,8 @@ export default function PrintInspectionReport() {
       <div className="print-page">
         <PageHeader />
         <div className="page-content">
+        {showPart2 && (
+        <>
         <div className="part-title">Part –II R&amp;QA Office Use</div>
         <table>
           <tbody>
@@ -494,9 +498,15 @@ export default function PrintInspectionReport() {
                 <td className="sno"></td>
                 <td className="label sub-label">Email Sent</td>
                 <td className="value">
-                  {String(p2?.email_sent || '').toLowerCase() === 'yes' ? 'Yes' : String(p2?.email_sent || '').toLowerCase() === 'no' ? 'No' : fmt(p2?.email_sent)}
-                  {p2?.email_sent_by ? ` — Name: ${p2.email_sent_by}` : ''}
-                  {p2?.email_sent_date ? ` — Date: ${p2.email_sent_date}` : ''}
+                  {p2?.email_sent_by || p2?.email_sent_date || String(p2?.email_sent || '').trim()
+                    ? (
+                      <>
+                        {String(p2?.email_sent || '').toLowerCase() === 'yes' ? 'Yes' : String(p2?.email_sent || '').toLowerCase() === 'no' ? 'No' : fmt(p2?.email_sent)}
+                        {p2?.email_sent_by ? ` — Name: ${p2.email_sent_by}` : ''}
+                        {p2?.email_sent_date ? ` — Date: ${p2.email_sent_date}` : ''}
+                      </>
+                    )
+                    : 'Pending (R&QA Inspector)'}
                 </td>
               </tr>
             )}
@@ -512,6 +522,8 @@ export default function PrintInspectionReport() {
             </tr>
           </tbody>
         </table>
+        </>
+        )}
 
         {/* ==================== PART III ==================== */}
         {showPart3 && (
@@ -543,6 +555,8 @@ export default function PrintInspectionReport() {
       <div className="print-page">
         <PageHeader />
         <div className="page-content">
+        {showPart4 && (
+        <>
         <div className="part-title">Part –IV CABS R&amp;QA INSPECTION REPORT (to be filled by R&amp;QA Division)</div>
 
         <table>
@@ -696,6 +710,8 @@ export default function PrintInspectionReport() {
             </tr>
           </tbody>
         </table>
+        </>
+        )}
 
         {showPart5 && (
           <>

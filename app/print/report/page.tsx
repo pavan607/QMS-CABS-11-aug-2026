@@ -49,7 +49,7 @@ interface ReportData {
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
   pending: 'Pending',
-  pending_request_approval: 'Pending Forward',
+  pending_request_approval: 'Pending Part-1 Approval',
   request_approved: 'Forwarded',
   assigned: 'Assigned',
   in_progress: 'In Progress',

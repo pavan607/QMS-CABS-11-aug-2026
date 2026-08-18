@@ -59,8 +59,8 @@ const STATUS_COLORS: Record<string, string> = {
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Draft',
   pending: 'Pending',
-  pending_request_approval: 'Pending Forward',
-  pending_part1_approval: 'Pending Part I Approval',
+  pending_request_approval: 'Pending Part-1 Approval',
+  pending_part1_approval: 'Pending Forward',
   request_approved: 'Part I Approved / Forwarded',
   assigned: 'Assigned',
   in_progress: 'In Progress',
@@ -263,7 +263,7 @@ export default function DashboardPage() {
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
             <StatCard
               icon={Clock}
-              label="Pending Part I Approval"
+              label="Pending Forward"
               value={actions.pending_part1_approval || actions.pending_approval || 0}
               sub="Awaiting your Part I approval"
               color="blue"
@@ -352,26 +352,71 @@ export default function DashboardPage() {
           <>
             <StatCard
               icon={ClipboardCheck}
-              label={userRole === 'inspector' ? 'Part IV Pending' : 'Part V Pending'}
-              value={
-                userRole === 'inspector'
-                  ? (actions.pending_part4 || 0)
-                  : (actions.pending_part5 || 0)
+              label={
+                userRole === 'inspector' && (actions.pending_outstation || 0) > 0
+                  ? 'Outstation Pending'
+                  : userRole === 'ordaqa_inspector' || (actions.pending_part5 || 0) > 0
+                    ? 'Part V Pending'
+                    : 'Part IV Pending'
               }
-              sub={userRole === 'inspector' ? 'Fill Part IV report' : 'Fill Part V (Sections 24–25)'}
+              value={
+                userRole === 'inspector' && (actions.pending_outstation || 0) > 0
+                  ? (actions.pending_outstation || 0)
+                  : userRole === 'ordaqa_inspector' || (actions.pending_part5 || 0) > 0
+                    ? (actions.pending_part5 || 0)
+                    : (actions.pending_part4 || 0)
+              }
+              sub={
+                userRole === 'inspector' && (actions.pending_outstation || 0) > 0
+                  ? 'Fill Email Sent / Name & Sign / Date'
+                  : userRole === 'ordaqa_inspector' || (actions.pending_part5 || 0) > 0
+                    ? 'Fill Part V (Sections 24–25)'
+                    : 'Fill Part IV report'
+              }
               color="blue"
               highlight={
-                userRole === 'inspector'
-                  ? !!actions.pending_part4
-                  : !!actions.pending_part5
+                userRole === 'inspector' && (actions.pending_outstation || 0) > 0
+                  ? !!actions.pending_outstation
+                  : userRole === 'ordaqa_inspector' || (actions.pending_part5 || 0) > 0
+                    ? !!actions.pending_part5
+                    : !!actions.pending_part4
               }
               href={
-                userRole === 'inspector'
-                  ? '/dashboard/inspections?highlight=pending_part4'
-                  : '/dashboard/inspections?highlight=pending_part5'
+                userRole === 'inspector' && (actions.pending_outstation || 0) > 0
+                  ? '/dashboard/inspections?highlight=pending_outstation'
+                  : userRole === 'ordaqa_inspector' || (actions.pending_part5 || 0) > 0
+                    ? '/dashboard/inspections?highlight=pending_part5'
+                    : '/dashboard/inspections?highlight=pending_part4'
               }
             />
-            <StatCard icon={Activity} label="In Progress" value={actions.my_in_progress || 0} sub="Currently working" color="amber" href="/dashboard/inspections?highlight=in_progress" />
+            {userRole === 'inspector' &&
+            ((actions.pending_outstation || 0) > 0
+              ? (actions.pending_part4 || 0) > 0 || (actions.pending_part5 || 0) > 0
+              : (actions.pending_part5 || 0) > 0 && (actions.pending_part4 || 0) > 0) ? (
+              <StatCard
+                icon={ClipboardCheck}
+                label={(actions.pending_part4 || 0) > 0 ? 'Part IV Pending' : 'Part V Pending'}
+                value={
+                  (actions.pending_part4 || 0) > 0
+                    ? (actions.pending_part4 || 0)
+                    : (actions.pending_part5 || 0)
+                }
+                sub={
+                  (actions.pending_part4 || 0) > 0
+                    ? 'Fill Part IV report'
+                    : 'Fill Part V (Sections 24–25)'
+                }
+                color="saffron"
+                highlight
+                href={
+                  (actions.pending_part4 || 0) > 0
+                    ? '/dashboard/inspections?highlight=pending_part4'
+                    : '/dashboard/inspections?highlight=pending_part5'
+                }
+              />
+            ) : (
+              <StatCard icon={Activity} label="In Progress" value={actions.my_in_progress || 0} sub="Currently working" color="amber" href="/dashboard/inspections?highlight=in_progress" />
+            )}
             <StatCard icon={AlertCircle} label="Overdue" value={stats?.overdue || 0} sub="Past due date" color="red" highlight={!!stats?.overdue} href="/dashboard/inspections?highlight=overdue" />
             <StatCard icon={TrendingUp} label="Completion Rate" value={`${stats?.completionRate.percentage || 0}%`} sub={`${stats?.completionRate.completed || 0} of ${stats?.completionRate.total || 0} this month`} color="green" />
           </>
@@ -407,7 +452,7 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Action Required</p>
                   <p className="text-xs text-amber-700 dark:text-amber-400">
                     {isPart1Approver && (actions.pending_part1_approval || actions.pending_approval) > 0 && (
-                      <>{actions.pending_part1_approval || actions.pending_approval} pending Part I approval</>
+                      <>{actions.pending_part1_approval || actions.pending_approval} pending Forward</>
                     )}
                     {!isPart1Approver &&
                       userRole === 'qa_head' &&
@@ -497,6 +542,34 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       )}
+      {userRole === 'inspector' && (actions.pending_outstation || 0) > 0 && (
+        <Card className="border-0 shadow-sm bg-gradient-to-r from-sky-50 to-blue-50 dark:from-sky-950/20 dark:to-blue-950/20 border-l-4 border-l-sky-500">
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="bg-sky-100 dark:bg-sky-900/40 p-2 rounded-lg">
+                  <ClipboardCheck className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-sky-900 dark:text-sky-200">
+                    Action Required — Outstation Inspection
+                  </p>
+                  <p className="text-xs text-sky-700 dark:text-sky-400">
+                    {actions.pending_outstation} inspection request
+                    {actions.pending_outstation === 1 ? '' : 's'} need Email Sent, Name &amp; Sign, and Date &amp; Time
+                    (Part II)
+                  </p>
+                </div>
+              </div>
+              <Button size="sm" className="bg-sky-600 hover:bg-sky-700 text-white h-8 text-xs" asChild>
+                <Link href="/dashboard/inspections?highlight=pending_outstation">
+                  Fill Outstation
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       {userRole === 'inspector' && (actions.pending_part4 || 0) > 0 && (
         <Card className="border-0 shadow-sm bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/20 dark:to-teal-950/20 border-l-4 border-l-emerald-500">
           <CardContent className="py-4">
@@ -522,7 +595,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       )}
-      {userRole === 'ordaqa_inspector' && (actions.pending_part5 || 0) > 0 && (
+      {(userRole === 'ordaqa_inspector' || userRole === 'inspector') && (actions.pending_part5 || 0) > 0 && (
         <Card className="border-0 shadow-sm bg-gradient-to-r from-cyan-50 to-sky-50 dark:from-cyan-950/20 dark:to-sky-950/20 border-l-4 border-l-cyan-500">
           <CardContent className="py-4">
             <div className="flex items-center justify-between">
@@ -531,10 +604,12 @@ export default function DashboardPage() {
                   <ClipboardCheck className="h-4 w-4 text-cyan-600 dark:text-cyan-400" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-cyan-900 dark:text-cyan-200">Action Required</p>
+                  <p className="text-sm font-semibold text-cyan-900 dark:text-cyan-200">
+                    Action Required{userRole === 'inspector' ? ' — Part V (Delegated)' : ''}
+                  </p>
                   <p className="text-xs text-cyan-700 dark:text-cyan-400">
                     {actions.pending_part5} inspection request
-                    {actions.pending_part5 === 1 ? '' : 's'} awaiting Part V
+                    {actions.pending_part5 === 1 ? '' : 's'} awaiting Part V (Sections 24–25)
                   </p>
                 </div>
               </div>
@@ -810,11 +885,8 @@ export default function DashboardPage() {
                             ]);
                             const showPart1Route = forwardedStatuses.has(String(r.status || ''));
                             if (!showPart1Route) return null;
-                            const forwardedTo =
-                              r.request_approver_name?.trim() ||
-                              r.nominated_request_approver_name?.trim() ||
-                              null;
-                            const approvedBy =
+                            const approvedByName = r.request_approver_name?.trim() || null;
+                            const forwardedByName =
                               [
                                 'pending_part1_approval',
                                 'pending_request_approval',
@@ -825,18 +897,24 @@ export default function DashboardPage() {
                               ].includes(String(r.status || ''))
                                 ? null
                                 : r.part1_approved_by_name?.trim() || null;
-                            if (!forwardedTo && !approvedBy && String(r.status) !== 'pending_part1_approval') {
+                            if (
+                              !approvedByName &&
+                              !forwardedByName &&
+                              String(r.status) !== 'pending_part1_approval' &&
+                              String(r.status) !== 'pending_request_approval'
+                            ) {
                               return null;
                             }
                             return (
                               <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground leading-snug max-w-[180px]">
                                 <p>
-                                  <span className="font-medium text-foreground/80">Part I forwarded by:</span>{' '}
-                                  {forwardedTo || '—'}
+                                  <span className="font-medium text-foreground/80">Part I Approved by:</span>{' '}
+                                  {approvedByName || '—'}
                                 </p>
                                 <p>
-                                  <span className="font-medium text-foreground/80">Part I approved by:</span>{' '}
-                                  {approvedBy || (String(r.status) === 'pending_part1_approval' ? 'Pending' : '—')}
+                                  <span className="font-medium text-foreground/80">Part I forwarded by:</span>{' '}
+                                  {forwardedByName ||
+                                    (String(r.status) === 'pending_part1_approval' ? 'Pending' : '—')}
                                 </p>
                               </div>
                             );

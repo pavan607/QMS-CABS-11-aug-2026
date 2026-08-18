@@ -431,7 +431,7 @@ function generateWordHtml(title: string, data: any, filters: any): string {
     } catch { return '—'; }
   };
   const statusLabels: Record<string, string> = {
-    draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Forward',
+    draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Part-1 Approval',
     request_approved: 'Forwarded', assigned: 'Assigned', in_progress: 'In Progress',
     inspection_completed: 'Inspection Done', completed: 'Completed',
     approved: 'Approved', rejected: 'Rejected', closed: 'Closed',
@@ -528,7 +528,7 @@ function generateExcelFile(title: string, data: any): Buffer {
     } catch { return ''; }
   };
   const statusLabels: Record<string, string> = {
-    draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Forward',
+    draft: 'Draft', pending: 'Pending', pending_request_approval: 'Pending Part-1 Approval',
     request_approved: 'Forwarded', assigned: 'Assigned', in_progress: 'In Progress',
     inspection_completed: 'Inspection Done', completed: 'Completed',
     approved: 'Approved', rejected: 'Rejected', closed: 'Closed',

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { canUserUpdatePart4, canUserUpdatePart5, canUserApprovePart4, canUserApproveOrdqaPart5, inspectionSkipsPart2Part3, memoReturnedAwaitingQaHead, ordaqaHeadPart3ActionRequired, ordaqaHeadReforwardActionRequired, resolveInspectionCustody, formatInspectionCustodyLine, formatCalendarDateDisplay } from '@/lib/inspection-display';
+import { canUserUpdatePart4, canUserUpdatePart5, canUserApprovePart4, canUserApproveOrdqaPart5, canUserFillPart2OutstationDetails, inspectionSkipsPart2Part3, memoReturnedAwaitingQaHead, ordaqaHeadPart3ActionRequired, ordaqaHeadReforwardActionRequired, resolveInspectionCustody, formatInspectionCustodyLine, formatCalendarDateDisplay, teamHeadQaNeedsInspectorAssignment, inspectionReadyForFinalTeamHeadApproval } from '@/lib/inspection-display';
 import { 
   Plus, Search, FileText,
   Calendar, MapPin, User, Paperclip, AlertCircle, Edit,
@@ -31,6 +31,7 @@ interface InspectionRequest {
   inspector_name?: string;
   inspector_names?: string | null;
   inspector_id?: number;
+  inspector_ids?: unknown;
   nominated_request_approver_id?: number | null;
   nominated_team_head_id?: number;
   qa_approver_id?: number;
@@ -53,12 +54,15 @@ interface InspectionRequest {
   forwarded_to_ordaqa?: boolean | null;
   ordaqa_inspector_id?: number | null;
   ordaqa_approver_id?: number | null;
+  part2_data?: unknown;
   part3_data?: unknown;
   part4_data?: unknown;
   has_memo_return_activity?: boolean | null;
   attachment_count: number;
   created_at: string;
   confirmations?: unknown;
+  so_involves_rqa?: unknown;
+  so_involves_dgaqa?: unknown;
 }
 
 const ACTIONABLE_STATUSES: Record<string, string[]> = {
@@ -133,8 +137,8 @@ function InspectionsContent() {
       returned_to_designer: 'bg-orange-100 text-orange-900 dark:bg-orange-950/40 dark:text-orange-200',
     };
     const labels: Record<string, string> = {
-      pending_request_approval: 'PENDING FORWARD',
-      pending_part1_approval: 'PENDING PART I APPROVAL',
+      pending_request_approval: 'PENDING PART-1 APPROVAL',
+      pending_part1_approval: 'PENDING FORWARD',
       request_approved: 'FORWARDED',
       inspection_completed: 'INSPECTION DONE',
       pending_qa_approval: 'PENDING QA',
@@ -169,9 +173,9 @@ function InspectionsContent() {
       return false;
     }
     if (request.nominated_team_head_id === permissions.userId) {
-      if (request.status === 'request_approved' && !request.inspector_id) return true;
+      if (teamHeadQaNeedsInspectorAssignment(request)) return true;
       if (canUserApprovePart4(request, permissions.userId, role)) return true;
-      if (['assigned', 'in_progress', 'inspection_completed'].includes(request.status)) return true;
+      if (inspectionReadyForFinalTeamHeadApproval(request)) return true;
       return false;
     }
     if (role === 'qa_approver') {
@@ -182,7 +186,11 @@ function InspectionsContent() {
       return false;
     }
     if (role === 'inspector') {
-      return canUserUpdatePart4(request, permissions.userId, role);
+      return (
+        canUserFillPart2OutstationDetails(request, permissions.userId, role) ||
+        canUserUpdatePart4(request, permissions.userId, role) ||
+        canUserUpdatePart5(request, permissions.userId, role)
+      );
     }
     if (role === 'ordaqa_inspector') {
       return canUserUpdatePart5(request, permissions.userId, role);
@@ -208,9 +216,22 @@ function InspectionsContent() {
             (request.status === 'request_approved' && !request.nominated_team_head_id)
           );
         }
+        if (permissions.userRole === 'qa_approver') {
+          return (
+            request.nominated_team_head_id === permissions.userId &&
+            teamHeadQaNeedsInspectorAssignment(request)
+          );
+        }
         return ['pending_request_approval', 'pending'].includes(request.status);
       case 'pending_part1': return request.status === 'pending_part1_approval';
-      case 'needs_assignment': return request.status === 'request_approved';
+      case 'needs_assignment':
+        if (permissions.userRole === 'qa_approver') {
+          return (
+            request.nominated_team_head_id === permissions.userId &&
+            teamHeadQaNeedsInspectorAssignment(request)
+          );
+        }
+        return request.status === 'request_approved';
       case 'assigned': return request.status === 'assigned';
       case 'in_progress': return request.status === 'in_progress';
       case 'drafts': return ['draft', 'pending'].includes(request.status);
@@ -221,6 +242,11 @@ function InspectionsContent() {
           permissions.userRole === 'inspector' &&
           canUserUpdatePart4(request, permissions.userId, permissions.userRole)
         );
+      case 'pending_outstation':
+        return (
+          permissions.userRole === 'inspector' &&
+          canUserFillPart2OutstationDetails(request, permissions.userId, permissions.userRole)
+        );
       case 'pending_part4_approval':
         return (
           permissions.userRole === 'qa_approver' &&
@@ -228,7 +254,7 @@ function InspectionsContent() {
         );
       case 'pending_part5':
         return (
-          permissions.userRole === 'ordaqa_inspector' &&
+          (permissions.userRole === 'ordaqa_inspector' || permissions.userRole === 'inspector') &&
           canUserUpdatePart5(request, permissions.userId, permissions.userRole)
         );
       case 'pending_part5_approval':
@@ -255,7 +281,7 @@ function InspectionsContent() {
     action: 'Needs Action',
     overdue: 'Overdue Inspections',
     pending_forward: 'Pending Forward',
-    pending_part1: 'Pending Part I Approval',
+    pending_part1: 'Pending Forward',
     needs_assignment: 'Needs Assignment',
     assigned: 'Assigned to You',
     in_progress: 'In Progress',
@@ -263,6 +289,7 @@ function InspectionsContent() {
     pending: 'Pending',
     returned_to_designer: 'Returned to Designer',
     pending_part4: 'Part IV Pending',
+    pending_outstation: 'Outstation Details Pending',
     pending_part4_approval: 'Part IV Awaiting Team Head Approval',
     pending_part5: 'Part V Pending',
     pending_part5_approval: 'Part V Awaiting ORDAQA Head Approval',
@@ -348,8 +375,8 @@ function InspectionsContent() {
               >
                 <option value="all">All Status</option>
                 <option value="pending">Draft / Pending</option>
-                <option value="pending_request_approval">Pending Forward</option>
-                <option value="pending_part1_approval">Pending Part I Approval</option>
+                <option value="pending_request_approval">Pending Part-1 Approval</option>
+                <option value="pending_part1_approval">Pending Forward</option>
                 <option value="request_approved">Forwarded</option>
                 <option value="assigned">Assigned</option>
                 <option value="in_progress">In Progress</option>
@@ -384,7 +411,16 @@ function InspectionsContent() {
       ) : (
         <div className="grid gap-4">
           {filteredRequests.map((request) => {
-            const actionable = shouldHighlight(request);
+            const actionable =
+              shouldHighlight(request) ||
+              (permissions.userRole === 'inspector' &&
+                (canUserFillPart2OutstationDetails(
+                  request,
+                  permissions.userId,
+                  permissions.userRole
+                ) ||
+                  canUserUpdatePart4(request, permissions.userId, permissions.userRole) ||
+                  canUserUpdatePart5(request, permissions.userId, permissions.userRole)));
             return (
             <Card key={request.id} className={`hover:shadow-md transition-shadow ${actionable ? 'border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/10' : ''}`}>
               <CardContent className="pt-6">
@@ -434,35 +470,26 @@ function InspectionsContent() {
                         })()}
                         {(() => {
                           const st = String(request.status || '');
-                          const forwardedTo =
-                            request.request_approver_name?.trim() ||
-                            request.nominated_request_approver_name?.trim() ||
-                            null;
+                          const approvedByName = request.request_approver_name?.trim() || null;
+                          const forwardedByName = request.part1_approved_by_name?.trim() || null;
                           const reachedPart1Queue =
-                            Boolean(forwardedTo) ||
+                            Boolean(approvedByName) ||
+                            Boolean(forwardedByName) ||
+                            Boolean(request.nominated_request_approver_name?.trim()) ||
                             st === 'pending_part1_approval' ||
-                            Boolean(request.part1_approved_by_name) ||
                             !['pending', 'draft', 'pending_request_approval', 'rejected'].includes(st);
-                          if (!reachedPart1Queue) return null;
-                          const pendingApproval = st === 'pending_part1_approval';
-                          const approvedBy =
-                            [
-                              'pending',
-                              'draft',
-                              'pending_request_approval',
-                              'returned_to_designer',
-                              'rejected',
-                            ].includes(st)
-                              ? null
-                              : request.part1_approved_by_name?.trim() || null;
+                          if (!reachedPart1Queue && st !== 'pending_request_approval') return null;
+                          const pendingForward = st === 'pending_part1_approval';
                           return (
                             <p className="text-xs text-muted-foreground mb-2">
-                              Part I forwarded by:{' '}
-                              <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
-                              {' · '}
-                              Part I approved by:{' '}
+                              Part I Approved by:{' '}
                               <span className="font-medium text-foreground">
-                                {approvedBy || (pendingApproval ? 'Pending' : '—')}
+                                {approvedByName || '—'}
+                              </span>
+                              {' · '}
+                              Part I forwarded by:{' '}
+                              <span className="font-medium text-foreground">
+                                {forwardedByName || (pendingForward ? 'Pending' : '—')}
                               </span>
                             </p>
                           );

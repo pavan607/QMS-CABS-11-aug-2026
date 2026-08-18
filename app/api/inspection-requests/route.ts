@@ -299,13 +299,22 @@ export async function POST(request: NextRequest) {
       quantity, quantity_per_set,
       previous_stage_cleared, logbook_attached, inspection_stage, inspection_mode,
       inspection_datetime, inspection_date_from, inspection_date_to, venue,
-      document_details, confirmations,
+      document_details, confirmations: confirmationsRaw,
       designer_rep_name, designer_rep_designation, designer_rep_contact, design_coordinator_name,
       certified_by_name, certified_by_designation,
       nominated_request_approver_id: bodyNominatedRa,
       so_involves_dgaqa: bodySoInvolvesDgaqa,
       so_involves_rqa: bodySoInvolvesRqa,
     } = body;
+
+    const confirmations =
+      confirmationsRaw && typeof confirmationsRaw === 'object' && !Array.isArray(confirmationsRaw)
+        ? (() => {
+            const c = { ...(confirmationsRaw as Record<string, unknown>) };
+            delete c.joint_inspection_request;
+            return c;
+          })()
+        : confirmationsRaw;
 
     let nominatedRequestApproverId: number | null = null;
     if (bodyNominatedRa != null && bodyNominatedRa !== '') {

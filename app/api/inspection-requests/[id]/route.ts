@@ -376,7 +376,7 @@ export async function PUT(
       inspection_date_to,
       venue,
       document_details,
-      confirmations,
+      confirmations: confirmationsRaw,
       designer_rep_name,
       designer_rep_designation,
       designer_rep_contact,
@@ -387,6 +387,15 @@ export async function PUT(
       so_involves_dgaqa: bodySoInvolvesDgaqa,
       so_involves_rqa: bodySoInvolvesRqa,
     } = body;
+
+    const confirmations =
+      confirmationsRaw && typeof confirmationsRaw === 'object' && !Array.isArray(confirmationsRaw)
+        ? (() => {
+            const c = { ...(confirmationsRaw as Record<string, unknown>) };
+            delete c.joint_inspection_request;
+            return c;
+          })()
+        : confirmationsRaw;
 
     const initiatorPart1Editable =
       existingRequest.initiator_id === userId &&

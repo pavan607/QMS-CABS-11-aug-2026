@@ -95,7 +95,15 @@ import {
   resolveAssignedInspectorsForDisplay,
   resolvePart4TeamHeadSignoff,
   isUserAssignedPart2Inspector,
+  canUserFillPart2OutstationDetails,
+  canUserInspectorOutstationRejectOrSendBack,
+  getInspectorSendBackToTeamHeadComment,
+  part2OutstationDetailsIncomplete,
+  part2OutstationDetailsSubmitted,
+  part2OutstationEditLockedByPart3,
   inspectionSkipsPart2Part3,
+  inspectionSkipsRqaPart2AndPart4,
+  rqaInvolvedInPart1,
   inspectionUsesLegacyOpenRqaPart4,
   jointInspectionRequestedInPart1,
   canUserQaApproverApproveAndClose,
@@ -125,12 +133,12 @@ function Part1RowEditNote({ changes }: { changes: Part1FieldChange[] }) {
       <p className="font-semibold text-[11px] uppercase tracking-wide text-amber-800 dark:text-amber-300 mb-1">
         Updated by Request Approver
       </p>
-      <ul className="space-y-0.5">
+      <ul className="space-y-1">
         {changes.map((c) => (
-          <li key={c.key}>
-            {changes.length > 1 && <span className="font-medium">{c.label}: </span>}
+          <li key={c.key} className="flex flex-wrap items-baseline gap-x-1">
+            <span className="font-semibold text-amber-900 dark:text-amber-200">{c.label}:</span>
             <span className="opacity-70 line-through decoration-amber-500/50">{c.from}</span>
-            <span className="mx-1 text-amber-700 dark:text-amber-300">→</span>
+            <span className="text-amber-700 dark:text-amber-300">→</span>
             <span className="font-medium">{c.to}</span>
           </li>
         ))}
@@ -449,7 +457,6 @@ const CONFIRMATION_LABELS: Record<string, string> = {
   previous_observations_status: 'c) Status of the previous observations/NCs.',
   cocs_available: 'd) CoCs, Certificates, Test Reports, Datasheets, verified Industry partner QC Reports etc. are available for offered stage.',
   instruments_available: 'e) Applicable measuring instruments/Testing facilities are available with valid calibration certificates.',
-  joint_inspection_request: 'f) Request for Joint Inspection with ORDAQA as per approved QAP.',
 };
 
 export default function InspectionDetailPage() {
@@ -520,6 +527,10 @@ export default function InspectionDetailPage() {
   const [part5SendBackComment, setPart5SendBackComment] = useState('');
   const [part4RejectDialogOpen, setPart4RejectDialogOpen] = useState(false);
   const [part4RejectComment, setPart4RejectComment] = useState('');
+  const [inspectorRejectDialogOpen, setInspectorRejectDialogOpen] = useState(false);
+  const [inspectorRejectComment, setInspectorRejectComment] = useState('');
+  const [inspectorSendBackDialogOpen, setInspectorSendBackDialogOpen] = useState(false);
+  const [inspectorSendBackComment, setInspectorSendBackComment] = useState('');
 
   useEffect(() => {
     if (params.id) {
@@ -1015,8 +1026,8 @@ export default function InspectionDetailPage() {
       returned_to_designer: 'bg-orange-100 text-orange-900 dark:bg-orange-950/40 dark:text-orange-200',
     };
     const labels: Record<string, string> = {
-      pending_request_approval: 'PENDING FORWARD',
-      pending_part1_approval: 'PENDING PART I APPROVAL',
+      pending_request_approval: 'PENDING PART-1 APPROVAL',
+      pending_part1_approval: 'PENDING FORWARD',
       request_approved: 'FORWARDED',
       inspection_completed: 'INSPECTION DONE',
       pending_qa_approval: 'PENDING QA',
@@ -1072,9 +1083,30 @@ export default function InspectionDetailPage() {
       .filter((c) => c?.key && !PART1_DESIGNER_REP_KEYS.has(c.key))
       .map((c) => [c.key, c] as const)
   );
-  const part1Changed = (...keys: string[]) => keys.some((k) => part1ChangesByKey.has(k));
-  const part1Notes = (...keys: string[]) =>
-    keys.map((k) => part1ChangesByKey.get(k)).filter(Boolean) as Part1FieldChange[];
+  const part1Changed = (...keys: string[]) =>
+    keys.some(
+      (k) =>
+        part1ChangesByKey.has(k) ||
+        [...part1ChangesByKey.keys()].some((ck) => ck === k || ck.startsWith(`${k}.`))
+    );
+  const part1Notes = (...keys: string[]) => {
+    const notes: Part1FieldChange[] = [];
+    for (const k of keys) {
+      const direct = part1ChangesByKey.get(k);
+      if (direct) notes.push(direct);
+      for (const [ck, c] of part1ChangesByKey) {
+        if (ck.startsWith(`${k}.`)) notes.push(c);
+      }
+    }
+    return notes;
+  };
+  /** Doc type key (e.g. qap) if any document_details.<key>.* change exists. */
+  const part1DocTypeChanged = (docKey: string) =>
+    [...part1ChangesByKey.keys()].some(
+      (ck) => ck === `document_details.${docKey}` || ck.startsWith(`document_details.${docKey}.`)
+    );
+  const part1ConfirmationChanged = (confKey: string) =>
+    part1ChangesByKey.has(`confirmations.${confKey}`);
 
   return (
     <div className="space-y-6">
@@ -1106,7 +1138,7 @@ export default function InspectionDetailPage() {
             {inspection.request_approver_send_back_comment}
           </p>
           <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-300/90">
-            Update Part I as needed, then resubmit for Part I approval (employee 1021).
+            Update Part I as needed, then resubmit for Part I approval.
           </p>
         </div>
       )}
@@ -1118,13 +1150,13 @@ export default function InspectionDetailPage() {
         inspection.status !== 'pending' &&
         inspection.status !== 'draft' && (
         <div className="rounded-lg border border-blue-200 bg-blue-50/90 px-4 py-3 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
-          <p className="font-medium">Comment from Request Approver</p>
+          <p className="font-medium">Comment from Part I Approver</p>
           <p className="mt-1 text-blue-900/90 dark:text-blue-200/90 whitespace-pre-wrap">
             {inspection.request_approver_forward_comment}
           </p>
           {inspection.request_approver_name && (
             <p className="mt-2 text-xs text-blue-800/80 dark:text-blue-300/90">
-              Forwarded by {inspection.request_approver_name}
+              Approved by {inspection.request_approver_name}
               {inspection.request_approval_date ? ` on ${fmtDate(inspection.request_approval_date)}` : ''}
             </p>
           )}
@@ -1156,6 +1188,68 @@ export default function InspectionDetailPage() {
           </p>
         </div>
       )}
+      {(() => {
+        const inspectorSb = getInspectorSendBackToTeamHeadComment(inspection);
+        const isTeamHeadViewer =
+          permissions.isAdmin() ||
+          permissions.isQaHead() ||
+          isNominatedTeamHeadUser(inspection, permissions.userId);
+        if (
+          !inspectorSb ||
+          !isTeamHeadViewer ||
+          hasInspectorsAssignedInsp(inspection) ||
+          inspection.status !== 'request_approved'
+        ) {
+          return null;
+        }
+        return (
+          <div className="rounded-lg border border-amber-300 bg-amber-50/95 px-4 py-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+            <p className="font-medium">Sent back by R&amp;QA Inspector — action for Team Head – QA</p>
+            <p className="mt-1 text-amber-900/90 dark:text-amber-200/90 whitespace-pre-wrap">{inspectorSb}</p>
+            <p className="mt-2 text-xs text-amber-800/80 dark:text-amber-300/90">
+              Review the comment, update Part II if needed, then re-assign inspector(s).
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              className="mt-3"
+              onClick={() => goToTab('part2', 'part2-assign-form')}
+            >
+              Review Part II &amp; Assign Inspector
+            </Button>
+          </div>
+        );
+      })()}
+      {(() => {
+        const inspectorSb = getInspectorSendBackToTeamHeadComment(inspection);
+        const p2 = parseJsonObj(inspection.part2_data);
+        const sentBy = Number(p2.inspector_send_back_by);
+        const prevIds = Array.isArray(p2.previous_inspector_ids)
+          ? p2.previous_inspector_ids.map((x: unknown) => Number(x)).filter((n: number) => Number.isFinite(n) && n > 0)
+          : [];
+        const wasInspector =
+          (Number.isFinite(sentBy) && sentBy === permissions.userId) ||
+          prevIds.includes(permissions.userId);
+        if (
+          !inspectorSb ||
+          !wasInspector ||
+          permissions.isQaHead() ||
+          isNominatedTeamHeadUser(inspection, permissions.userId) ||
+          hasInspectorsAssignedInsp(inspection) ||
+          inspection.status !== 'request_approved'
+        ) {
+          return null;
+        }
+        return (
+          <div className="rounded-lg border border-sky-300 bg-sky-50/95 px-4 py-3 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-100">
+            <p className="font-medium">Sent back to Team Head – QA</p>
+            <p className="mt-1 text-sky-900/90 dark:text-sky-200/90 whitespace-pre-wrap">{inspectorSb}</p>
+            <p className="mt-2 text-xs text-sky-800/80 dark:text-sky-300/90">
+              This IR stays on your list in view-only mode until Team Head – QA re-assigns inspector(s).
+            </p>
+          </div>
+        );
+      })()}
 
       <Dialog open={sendBackDialogOpen} onOpenChange={setSendBackDialogOpen}>
         <DialogContent className="sm:max-w-lg">
@@ -1205,20 +1299,20 @@ export default function InspectionDetailPage() {
           <DialogHeader>
             <DialogTitle>
               {inspection?.status === 'pending_part1_approval'
-                ? 'Approve Part I and forward to QA Head'
-                : 'Forward to Part I Approver'}
+                ? 'Forward Request to QA Head'
+                : 'Approve Part I'}
             </DialogTitle>
             <DialogDescription>
               {inspection?.status === 'pending_part1_approval'
-                ? 'Part I will be approved and the IR will go to QA Head (Part II). You may optionally add a comment.'
-                : 'The IR will be sent to the Part I Approver. You may optionally add a comment.'}
+                ? 'The IR will be forwarded to QA Head (Part II). You may optionally add a comment.'
+                : 'Part I will be approved and sent to employee 1021 for Forward Request. You may optionally add a comment.'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
             <Label htmlFor="forward-comment">
               {inspection?.status === 'pending_part1_approval'
                 ? 'Comment for QA Head (optional)'
-                : 'Comment for Part I Approver (optional)'}
+                : 'Comment (optional)'}
             </Label>
             <Textarea
               id="forward-comment"
@@ -1248,7 +1342,7 @@ export default function InspectionDetailPage() {
               }}
             >
               <CheckCircle className="mr-2 h-4 w-4" />
-              {inspection?.status === 'pending_part1_approval' ? 'Approve Part I' : 'Forward Request'}
+              {inspection?.status === 'pending_part1_approval' ? 'Forward Request' : 'Approve Part I'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1443,6 +1537,97 @@ export default function InspectionDetailPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={inspectorRejectDialogOpen} onOpenChange={setInspectorRejectDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reject inspection request</DialogTitle>
+            <DialogDescription>
+              Permanently reject this IR as R&amp;QA Inspector. Enter a comment.
+              All stakeholders on this inspection request will be notified.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="inspector-reject-comment">Comment</Label>
+            <Textarea
+              id="inspector-reject-comment"
+              rows={4}
+              placeholder="Comment"
+              value={inspectorRejectComment}
+              onChange={(e) => setInspectorRejectComment(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setInspectorRejectDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={async () => {
+                const trimmed = inspectorRejectComment.trim();
+                if (!trimmed) {
+                  showMessage('error', 'Please enter a comment.');
+                  return;
+                }
+                const ok = await handleWorkflowAction('inspector_reject_ir', { comments: trimmed });
+                if (ok) {
+                  setInspectorRejectComment('');
+                  setInspectorRejectDialogOpen(false);
+                }
+              }}
+            >
+              Reject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={inspectorSendBackDialogOpen} onOpenChange={setInspectorSendBackDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Send back to Team Head – QA</DialogTitle>
+            <DialogDescription>
+              Return this IR to Team Head – QA so they can edit Part II / re-assign inspector(s).
+              Your comment will be visible to Team Head – QA, and all stakeholders will be notified.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="inspector-sendback-comment">Comment</Label>
+            <Textarea
+              id="inspector-sendback-comment"
+              rows={4}
+              placeholder="Comment for Team Head – QA"
+              value={inspectorSendBackComment}
+              onChange={(e) => setInspectorSendBackComment(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setInspectorSendBackDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={async () => {
+                const trimmed = inspectorSendBackComment.trim();
+                if (!trimmed) {
+                  showMessage('error', 'Please enter a comment.');
+                  return;
+                }
+                const ok = await handleWorkflowAction('inspector_send_back_to_team_head', {
+                  comments: trimmed,
+                });
+                if (ok) {
+                  setInspectorSendBackComment('');
+                  setInspectorSendBackDialogOpen(false);
+                }
+              }}
+            >
+              Send back
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -1489,40 +1674,43 @@ export default function InspectionDetailPage() {
             })()}
             {(() => {
               const st = String(inspection.status || '');
-              const forwardedTo =
-                inspection.request_approver_name?.trim() ||
-                inspection.nominated_request_approver_name?.trim() ||
-                null;
+              // Only the person who clicked Approve Part I (request_approver_id) — not the nominated name
+              const approvedByName = inspection.request_approver_name?.trim() || null;
+              const forwardedByName = inspection.part1_approved_by_name?.trim() || null;
               const reachedPart1Queue =
-                Boolean(forwardedTo) ||
+                Boolean(approvedByName) ||
+                Boolean(forwardedByName) ||
+                Boolean(inspection.nominated_request_approver_name?.trim()) ||
                 st === 'pending_part1_approval' ||
                 Boolean(inspection.part1_approved_by) ||
-                Boolean(inspection.part1_approved_by_name) ||
                 ![
                   'pending',
                   'draft',
                   'pending_request_approval',
                   'rejected',
                 ].includes(st);
+              if (!reachedPart1Queue && st === 'pending_request_approval') {
+                // Waiting for selected Request Approver to Approve Part I
+                return (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Part I Approved by:{' '}
+                    <span className="font-medium text-foreground">—</span>
+                    {' · '}
+                    Part I forwarded by:{' '}
+                    <span className="font-medium text-foreground">—</span>
+                  </p>
+                );
+              }
               if (!reachedPart1Queue) return null;
-              const pendingApproval = st === 'pending_part1_approval';
-              // Only show a real Part I approval — never fall back to the role holder (1021) name
-              const approvedBy =
-                st === 'returned_to_designer' ||
-                st === 'pending_request_approval' ||
-                st === 'pending' ||
-                st === 'draft' ||
-                st === 'rejected'
-                  ? null
-                  : inspection.part1_approved_by_name?.trim() || null;
+              const pendingForward = st === 'pending_part1_approval';
               return (
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Part I forwarded by:{' '}
-                  <span className="font-medium text-foreground">{forwardedTo || '—'}</span>
+                  Part I Approved by:{' '}
+                  <span className="font-medium text-foreground">{approvedByName || '—'}</span>
                   {' · '}
-                  Part I approved by:{' '}
+                  Part I forwarded by:{' '}
                   <span className="font-medium text-foreground">
-                    {approvedBy || (pendingApproval ? 'Pending' : '—')}
+                    {forwardedByName || (pendingForward ? 'Pending' : '—')}
                   </span>
                 </p>
               );
@@ -1550,7 +1738,7 @@ export default function InspectionDetailPage() {
                 </Link>
               </Button>
             ) : null}
-          {/* Request Approver / nominated DH Initiator: Forward / Send back / Reject */}
+          {/* Selected Request Approver / nominated DH: Approve Part I / Send back / Reject */}
           {(inspection.status === 'pending_request_approval' || inspection.status === 'pending') &&
             permissions.canActAsRequestCertifier(inspection) && (
             <>
@@ -1576,11 +1764,11 @@ export default function InspectionDetailPage() {
                 setForwardDialogOpen(true);
               }}>
                 <CheckCircle className="mr-2 h-4 w-4" />
-                Forward Request
+                Approve Part I
               </Button>
             </>
           )}
-          {/* Part I Approver (employee 1021): after RA forward — Approve / Reject only (no send back) */}
+          {/* Employee 1021: after selected approver — Forward Request to QA Head */}
           {inspection.status === 'pending_part1_approval' && permissions.isPart1Approver() && (
             <>
               <Button variant="outline" onClick={() => {
@@ -1595,12 +1783,13 @@ export default function InspectionDetailPage() {
                 setForwardDialogOpen(true);
               }}>
                 <CheckCircle className="mr-2 h-4 w-4" />
-                Approve Part I
+                Forward Request
               </Button>
             </>
           )}
-          {/* QA Head: Fill Part II Step 1 (includes 19(f) No — Team Head selection; ORDAQA Part III still skipped) */}
-          {inspection.status === 'request_approved' &&
+          {/* QA Head: Fill Part II (R&QA involvement Yes only) */}
+          {rqaInvolvedInPart1(inspection) &&
+            inspection.status === 'request_approved' &&
             !inspection.nominated_team_head_id &&
             (permissions.isQaHead() || permissions.isAdmin()) && (
             <Button onClick={() => goToTab('part2')}>
@@ -1608,16 +1797,55 @@ export default function InspectionDetailPage() {
               Fill Part II
             </Button>
           )}
-          {(permissions.isQaHead() || permissions.isAdmin()) &&
+          {rqaInvolvedInPart1(inspection) &&
+            (permissions.isQaHead() || permissions.isAdmin()) &&
             !!inspection.nominated_team_head_id &&
-            ['request_approved', 'assigned', 'in_progress'].includes(inspection.status) && (
+            ['request_approved', 'assigned', 'in_progress'].includes(inspection.status) &&
+            (!hasInspectorsAssignedInsp(inspection) || memoReturnedAwaitingQaHead(inspection)) && (
             <Button variant="outline" onClick={() => goToTab('part2')}>
               <Edit className="mr-2 h-4 w-4" />
               {memoReturnedAwaitingQaHead(inspection) ? 'Edit & Resubmit Part II' : 'Edit Part II'}
             </Button>
           )}
-          {!inspectionSkipsPart2Part3(inspection) &&
-            canEditPart3Section23(inspection) &&
+          {canUserFillPart2OutstationDetails(
+            inspection,
+            permissions.userId,
+            permissions.userRole
+          ) && (
+            <Button onClick={() => goToTab('part2')}>
+              <AlertCircle className="mr-2 h-4 w-4" />
+              Fill Outstation Details
+            </Button>
+          )}
+          {canUserInspectorOutstationRejectOrSendBack(
+            inspection,
+            permissions.userId,
+            permissions.userRole
+          ) && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setInspectorSendBackComment('');
+                  setInspectorSendBackDialogOpen(true);
+                }}
+              >
+                <RotateCcw className="mr-2 h-4 w-4" />
+                Send back
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setInspectorRejectComment('');
+                  setInspectorRejectDialogOpen(true);
+                }}
+              >
+                <XCircle className="mr-2 h-4 w-4" />
+                Reject with comments
+              </Button>
+            </>
+          )}
+          {canEditPart3Section23(inspection) &&
             (permissions.isOrdaqaHead() || permissions.isAdmin()) &&
             !part3Section23HasSavedData(inspection) && (
             <Button onClick={() => goToTab('part3')}>
@@ -1625,8 +1853,7 @@ export default function InspectionDetailPage() {
               Fill Part III
             </Button>
           )}
-          {!inspectionSkipsPart2Part3(inspection) &&
-            canEditPart3Section23(inspection) &&
+          {canEditPart3Section23(inspection) &&
             (permissions.isOrdaqaHead() || permissions.isAdmin()) &&
             part3Section23HasSavedData(inspection) && (
             <Button variant="outline" onClick={() => goToTab('part3')}>
@@ -1689,6 +1916,7 @@ export default function InspectionDetailPage() {
           ) &&
             !!inspection.nominated_team_head_id &&
             !inspectionPart4Saved(inspection) &&
+            !part2OutstationDetailsSubmitted(inspection) &&
             ((inspection.status === 'request_approved' && !hasInspectorsAssignedInsp(inspection)) ||
               (hasInspectorsAssignedInsp(inspection) &&
                 ['assigned', 'in_progress'].includes(inspection.status))) && (
@@ -1822,7 +2050,7 @@ export default function InspectionDetailPage() {
                         setForwardDialogOpen(true);
                       }}
                     >
-                      Forward Request
+                      Approve Part I
                     </DropdownMenuItem>
                   </>
                 )}
@@ -1833,7 +2061,7 @@ export default function InspectionDetailPage() {
                       setForwardDialogOpen(true);
                     }}
                   >
-                    Approve Part I
+                    Forward Request
                   </DropdownMenuItem>
                 )}
                 {['request_approved', 'assigned', 'in_progress', 'inspection_completed'].includes(inspection.status) && (
@@ -1954,8 +2182,9 @@ export default function InspectionDetailPage() {
         <CardContent className="pt-4 pb-4">
           <div className="flex flex-wrap items-center justify-between gap-y-2 text-xs">
             {(() => {
-              const skipOrdqa = inspectionSkipsPart2Part3(inspection);
+              const skipRqa = inspectionSkipsRqaPart2AndPart4(inspection);
               const needsOrdqa = inspectionRequiresOrdqaPart5(inspection);
+              const needsRqa = rqaInvolvedInPart1(inspection);
               const part2Saved =
                 !!inspection.nominated_team_head_id ||
                 hasInspectorsAssignedInsp(inspection);
@@ -1969,7 +2198,7 @@ export default function InspectionDetailPage() {
                 p4Unlocked &&
                 p4Done &&
                 (part4PendingTeamHeadApproval(inspection) || part4ApprovedByTeamHead(inspection));
-              const part5Na = skipOrdqa || !needsOrdqa;
+              const part5Na = !needsOrdqa;
               const steps: { key: string; done: boolean; na?: boolean }[] = [
                 // Tick once Part I is submitted to Request Approver (untick if returned to designer)
                 {
@@ -1983,21 +2212,35 @@ export default function InspectionDetailPage() {
                     inspection.status
                   ),
                 },
-                {
-                  key: needsOrdqa ? 'Part II/III' : 'Part II',
-                  // Part II ticks once QA Head saves Part II; Part II/III also needs Part III done
-                  done: needsOrdqa ? part2Saved && part3OrdqaDone : part2Saved,
-                },
-                // Tick when Part IV is submitted (pending Team Head or already approved)
-                { key: 'Part IV', done: p4Submitted },
+                ...(needsRqa
+                  ? [
+                      {
+                        key: needsOrdqa ? 'Part II/III' : 'Part II',
+                        done: needsOrdqa ? part2Saved && part3OrdqaDone : part2Saved,
+                      } as { key: string; done: boolean; na?: boolean },
+                    ]
+                  : needsOrdqa
+                    ? [
+                        {
+                          key: 'Part III',
+                          done: part3OrdqaDone,
+                        } as { key: string; done: boolean; na?: boolean },
+                      ]
+                    : []),
+                ...(needsRqa
+                  ? [
+                      {
+                        key: 'Part IV',
+                        done: p4Submitted,
+                      } as { key: string; done: boolean; na?: boolean },
+                    ]
+                  : []),
                 ...(!part5Na
                   ? [
                       {
                         key: 'Part V',
                         done:
-                          p4Unlocked &&
-                          p4Done &&
-                          part4ApprovedByTeamHead(inspection) &&
+                          (skipRqa || (p4Unlocked && p4Done && part4ApprovedByTeamHead(inspection))) &&
                           ordqaPart5Completed(inspection),
                       } as { key: string; done: boolean; na?: boolean },
                     ]
@@ -2222,7 +2465,7 @@ export default function InspectionDetailPage() {
                           })()}
                           <div className="flex flex-wrap gap-2">
                             <Badge variant={inspection.so_involves_dgaqa ? 'default' : 'secondary'}>
-                              DGAQA: {inspection.so_involves_dgaqa ? 'Yes' : 'No'}
+                              DGAQA (ORDAQA): {inspection.so_involves_dgaqa ? 'Yes' : 'No'}
                             </Badge>
                             <Badge variant={inspection.so_involves_rqa ? 'default' : 'secondary'}>
                               R&QA: {inspection.so_involves_rqa ? 'Yes' : 'No'}
@@ -2534,10 +2777,24 @@ export default function InspectionDetailPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {(() => { const docs = parseJsonObj(inspection.document_details); return DOC_TYPE_ORDER.filter(k => docs[k]).map(k => [k, docs[k]] as [string, any]); })().map(([key, doc]: [string, any]) => (
-                        <tr key={key}>
-                          <td className="px-4 py-2 font-medium">{DOC_TYPE_LABELS[key] || key}</td>
-                          <td className="px-4 py-2 text-center">
+                      {(() => { const docs = parseJsonObj(inspection.document_details); return DOC_TYPE_ORDER.filter(k => docs[k]).map(k => [k, docs[k]] as [string, any]); })().map(([key, doc]: [string, any]) => {
+                        const rowChanged = part1DocTypeChanged(key);
+                        const approvedChanged = part1ChangesByKey.has(`document_details.${key}.approved`);
+                        const docNoChanged = part1ChangesByKey.has(`document_details.${key}.doc_no`);
+                        const amdChanged = part1ChangesByKey.has(`document_details.${key}.amd_no`);
+                        const revChanged = part1ChangesByKey.has(`document_details.${key}.rev_no`);
+                        const dateChanged = part1ChangesByKey.has(`document_details.${key}.date`);
+                        const cellHi = (changed: boolean) =>
+                          changed ? 'bg-amber-100/90 dark:bg-amber-900/40 font-semibold ring-1 ring-inset ring-amber-300/70 dark:ring-amber-700/60' : '';
+                        return (
+                        <tr key={key} className={rowChanged ? 'bg-amber-50/70 dark:bg-amber-950/25' : undefined}>
+                          <td className="px-4 py-2 font-medium">
+                            {DOC_TYPE_LABELS[key] || key}
+                            {rowChanged && (
+                              <Badge className="ml-2 bg-amber-500 text-white text-[9px] px-1 py-0 align-middle">Updated</Badge>
+                            )}
+                          </td>
+                          <td className={`px-4 py-2 text-center ${cellHi(approvedChanged)}`}>
                             <Badge
                               variant="outline"
                               className={
@@ -2550,12 +2807,21 @@ export default function InspectionDetailPage() {
                               {doc.approved === 'yes' ? 'Yes' : doc.approved === 'no' ? 'No' : doc.approved === 'na' ? 'NA' : doc.approved === 'draft' ? 'Draft' : 'N/A'}
                             </Badge>
                           </td>
-                          <td className="px-4 py-2 font-mono text-xs">{doc.doc_no || '—'}</td>
-                          <td className="px-4 py-2 text-center">{doc.amd_no || '—'}</td>
-                          <td className="px-4 py-2 text-center">{doc.rev_no || '—'}</td>
-                          <td className="px-4 py-2">{doc.date || '—'}</td>
+                          <td className={`px-4 py-2 font-mono text-xs ${cellHi(docNoChanged)}`}>
+                            {doc.doc_no != null && String(doc.doc_no).trim() !== '' ? String(doc.doc_no) : '—'}
+                          </td>
+                          <td className={`px-4 py-2 text-center ${cellHi(amdChanged)}`}>
+                            {doc.amd_no != null && String(doc.amd_no).trim() !== '' ? String(doc.amd_no) : '—'}
+                          </td>
+                          <td className={`px-4 py-2 text-center ${cellHi(revChanged)}`}>
+                            {doc.rev_no != null && String(doc.rev_no).trim() !== '' ? String(doc.rev_no) : '—'}
+                          </td>
+                          <td className={`px-4 py-2 ${cellHi(dateChanged)}`}>
+                            {doc.date != null && String(doc.date).trim() !== '' ? String(doc.date) : '—'}
+                          </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2596,10 +2862,13 @@ export default function InspectionDetailPage() {
                         const conf = parseJsonObj(inspection.confirmations);
                         const orderedKeys = [
                           ...Object.keys(CONFIRMATION_LABELS).filter((k) => k in conf),
-                          ...Object.keys(conf).filter((k) => !(k in CONFIRMATION_LABELS)),
+                          ...Object.keys(conf).filter(
+                            (k) => !(k in CONFIRMATION_LABELS) && k !== 'joint_inspection_request'
+                          ),
                         ];
                         return orderedKeys.map((key) => {
                           const val = conf[key];
+                          const rowChanged = part1ConfirmationChanged(key);
                           const display =
                             val === 'yes' ? 'Yes' :
                             val === 'no' ? 'No' :
@@ -2608,16 +2877,21 @@ export default function InspectionDetailPage() {
                             val === 'na' || val === 'n/a' ? 'N/A' :
                             String(val || '—');
                           return (
-                        <tr key={key}>
+                        <tr key={key} className={rowChanged ? 'bg-amber-50/90 dark:bg-amber-950/25' : undefined}>
                           <td className="px-4 py-2.5 flex-1">
-                            <div>{CONFIRMATION_LABELS[key] || key}</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span>{CONFIRMATION_LABELS[key] || key}</span>
+                              {rowChanged && (
+                                <Badge className="bg-amber-500 text-white text-[9px] px-1 py-0">Updated</Badge>
+                              )}
+                            </div>
                             {key === 'instruments_available' && val === 'no' && (
                               <p className="mt-1 text-xs font-semibold text-red-700">
                                 Note: Inspection stage may be liable for rejection
                               </p>
                             )}
                           </td>
-                          <td className="px-4 py-2.5 text-center w-[100px]">
+                          <td className={`px-4 py-2.5 text-center w-[100px] ${rowChanged ? 'bg-amber-100/90 dark:bg-amber-900/40 ring-1 ring-inset ring-amber-300/70' : ''}`}>
                             <Badge
                               variant="outline"
                               className={
@@ -2702,7 +2976,7 @@ export default function InspectionDetailPage() {
                           {inspection.status === 'pending_request_approval' ? (
                             <span className="text-amber-600 dark:text-amber-400">⏳ Pending Request Approver forward</span>
                           ) : inspection.status === 'pending_part1_approval' ? (
-                            <span className="text-orange-600 dark:text-orange-400">⏳ Pending Part I approval</span>
+                            <span className="text-orange-600 dark:text-orange-400">⏳ pending forward</span>
                           ) : inspection.status === 'pending' || inspection.status === 'draft' ? (
                             <span>Submit IR for Request Approver forward to enable this section</span>
                           ) : (
@@ -2747,7 +3021,7 @@ export default function InspectionDetailPage() {
                         )}
                         {isSignedOff && inspection.status === 'pending_part1_approval' && (
                           <p className="text-xs text-orange-600 dark:text-orange-400 italic pt-2 border-t">
-                            ⏳ Forwarded — pending Part I approval
+                            ⏳ pending forward
                           </p>
                         )}
                         {isSignedOff && inspection.status !== 'pending_part1_approval' && (
@@ -2784,15 +3058,28 @@ export default function InspectionDetailPage() {
                   )}
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Part I forwarded by</Label>
+                  <Label className="text-xs text-muted-foreground">Part I Approved by</Label>
                   <p className="font-medium">
-                    {inspection.request_approver_name?.trim() ||
-                      inspection.nominated_request_approver_name?.trim() ||
-                      '—'}
+                    {(() => {
+                      const st = String(inspection.status || '');
+                      if (
+                        [
+                          'pending',
+                          'draft',
+                          'pending_request_approval',
+                          'returned_to_designer',
+                          'rejected',
+                        ].includes(st)
+                      ) {
+                        return '—';
+                      }
+                      // Name of the selected Request Approver after they click Approve Part I
+                      return inspection.request_approver_name?.trim() || '—';
+                    })()}
                   </p>
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Part I approved by</Label>
+                  <Label className="text-xs text-muted-foreground">Part I forwarded by</Label>
                   <p className="font-medium">
                     {(() => {
                       const st = String(inspection.status || '');
@@ -2841,23 +3128,32 @@ export default function InspectionDetailPage() {
               <CardDescription>Section 22 — Head R&QA comments, nominations, and forwarding to ORDAQA</CardDescription>
             </CardHeader>
             <CardContent>
+              {inspectionSkipsRqaPart2AndPart4(inspection) ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="font-medium">Part II — Not Applicable</p>
+                  <p className="text-sm mt-1">
+                    Part I R&amp;QA involvement is <strong>No</strong> — Part II is not required.
+                  </p>
+                </div>
+              ) : (
+              <>
               {inspection.status === 'returned_to_designer' && (
                 <div className="mb-4 rounded-md border border-orange-200 bg-orange-50/80 px-3 py-2 text-sm text-orange-900 dark:border-orange-800 dark:bg-orange-950/25 dark:text-orange-200">
                   This request is with the initiator for Part I corrections. After resubmit and Part I approval (1021), QA Head will complete Part II again.
                 </div>
               )}
-              {inspectionSkipsPart2Part3(inspection) && (
+              {inspectionSkipsPart2Part3(inspection) && !isForwardedToOrdqa(inspection) && (
                 <div className="mb-4 rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-200">
-                  Part I 19(f) joint inspection is <strong>No</strong> — QA Head selects <strong>Team Head – QA</strong> below.
-                  ORDAQA Parts III and V do not apply.
+                  Part I DGAQA (ORDAQA) involvement is <strong>No</strong> — QA Head still selects{' '}
+                  <strong>Team Head – QA</strong> below, and may turn on{' '}
+                  <strong>Forward to ORDAQA for Joint Inspection</strong> if ORDAQA Parts III and V are needed.
                 </div>
               )}
               {(() => {
                 const p3Memo = parseJsonObj(inspection.part3_data);
                 if (
                   String(p3Memo.memo_returned ?? '').toLowerCase() === 'yes' &&
-                  !inspection.forwarded_to_ordaqa &&
-                  !inspectionSkipsPart2Part3(inspection)
+                  !inspection.forwarded_to_ordaqa
                 ) {
                   return (
                     <div className="mb-4 rounded-md border border-orange-200 bg-orange-50/80 px-3 py-2 text-sm text-orange-900 dark:border-orange-800 dark:bg-orange-950/25 dark:text-orange-200">
@@ -2904,15 +3200,13 @@ export default function InspectionDetailPage() {
                   inspAssigned &&
                   !!inspection.nominated_team_head_id &&
                   ['assigned', 'in_progress'].includes(inspection.status) &&
-                  !inspectionPart4Saved(inspection);
-                const disableOrdqaForward = inspectionSkipsPart2Part3(inspection);
-
+                  !inspectionPart4Saved(inspection) &&
+                  !part2OutstationDetailsSubmitted(inspection);
                 if (showPart2FirstFill) {
                   return (
                     <Part2Step1Form
                       inspectionId={inspection.id}
                       inspection={inspection}
-                      disableForwardToOrdqa={disableOrdqaForward}
                       onComplete={fetchInspection}
                       onSuccess={(msg) => showMessage('success', msg)}
                     />
@@ -2922,6 +3216,23 @@ export default function InspectionDetailPage() {
                 return (
                   <>
                     {showPart2Summary && <Part2Display inspection={inspection} />}
+
+                    {(() => {
+                      const sendBackComment = getInspectorSendBackToTeamHeadComment(inspection);
+                      if (!sendBackComment || inspAssigned) return null;
+                      return (
+                        <div className="mt-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                          <div>
+                            <p className="font-semibold">Sent back by R&amp;QA Inspector</p>
+                            <p className="text-xs mt-1 whitespace-pre-wrap opacity-95">{sendBackComment}</p>
+                            <p className="text-xs mt-1.5 opacity-80">
+                              Review the comment, update Part II if needed, then re-assign inspector(s).
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {showPart2Step2Assign && (
                       <>
@@ -2953,6 +3264,64 @@ export default function InspectionDetailPage() {
                       </>
                     )}
 
+                    {(() => {
+                      const p2 = parseJsonObj(inspection.part2_data);
+                      const outstationOn = !!p2.outstation_inspection;
+                      const isAssignedInsp =
+                        isUserAssignedPart2Inspector(inspection, permissions.userId) ||
+                        permissions.isAdmin();
+                      const needsOutstationFill = canUserFillPart2OutstationDetails(
+                        inspection,
+                        permissions.userId,
+                        permissions.userRole
+                      );
+                      const part3LocksOutstation = part2OutstationEditLockedByPart3(inspection);
+                      // After Part III is submitted, hide Outstation edit form (values stay in Part II summary)
+                      const canFillOutstation =
+                        !part3LocksOutstation &&
+                        (needsOutstationFill ||
+                          (outstationOn &&
+                            isAssignedInsp &&
+                            inspAssigned &&
+                            ['assigned', 'in_progress'].includes(inspection.status) &&
+                            !inspectionPart4Saved(inspection)));
+                      if (!canFillOutstation) return null;
+                      return (
+                        <>
+                          <Separator className="my-4" />
+                          {needsOutstationFill && (
+                            <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                              <div>
+                                <p className="font-semibold">Action Required — Outstation Inspection</p>
+                                <p className="text-xs mt-0.5 opacity-90">
+                                  Fill Email Sent, Name &amp; Sign, and Date &amp; Time below, then save.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                          <Part2InspectorOutstationForm
+                            inspection={inspection}
+                            onComplete={fetchInspection}
+                            onSuccess={(msg) => showMessage('success', msg)}
+                            showRejectSendBack={canUserInspectorOutstationRejectOrSendBack(
+                              inspection,
+                              permissions.userId,
+                              permissions.userRole
+                            )}
+                            onReject={() => {
+                              setInspectorRejectComment('');
+                              setInspectorRejectDialogOpen(true);
+                            }}
+                            onSendBack={() => {
+                              setInspectorSendBackComment('');
+                              setInspectorSendBackDialogOpen(true);
+                            }}
+                          />
+                        </>
+                      );
+                    })()}
+
                     {inspection.status === 'request_approved' &&
                       !!inspection.nominated_team_head_id &&
                       !inspAssigned &&
@@ -2982,7 +3351,6 @@ export default function InspectionDetailPage() {
                           inspection={inspection}
                           lockTeamHeadSelection={inspAssigned && !memoAwaitingQa}
                           memoResubmit={memoAwaitingQa}
-                          disableForwardToOrdqa={disableOrdqaForward}
                           onComplete={fetchInspection}
                           onSuccess={(msg) => showMessage('success', msg)}
                         />
@@ -3009,7 +3377,6 @@ export default function InspectionDetailPage() {
                           inspection={inspection}
                           lockTeamHeadSelection={inspAssigned && !memoAwaitingQa}
                           memoResubmit={memoAwaitingQa}
-                          disableForwardToOrdqa={disableOrdqaForward}
                           onComplete={fetchInspection}
                           onSuccess={(msg) => showMessage('success', msg)}
                         />
@@ -3033,14 +3400,17 @@ export default function InspectionDetailPage() {
                         <div className="text-center py-8 text-muted-foreground">
                           <p className="font-medium">Part II is not yet available</p>
                           <p className="text-sm mt-1">
-                            Request must be forwarded by approver first (current status:{' '}
-                            {inspection.status.replace(/_/g, ' ')})
+                            {inspection.status === 'pending_part1_approval'
+                              ? 'Request must be forwarded to QA head (current status: pending forward)'
+                              : `Request must be forwarded by approver first (current status: ${inspection.status.replace(/_/g, ' ')})`}
                           </p>
                         </div>
                       )}
                   </>
                 );
               })()}
+              </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -3055,13 +3425,16 @@ export default function InspectionDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {inspectionSkipsPart2Part3(inspection) ? (
+              {inspectionSkipsPart2Part3(inspection) &&
+              !isForwardedToOrdqa(inspection) &&
+              !part3Section23HasSavedData(inspection) &&
+              !memoReturnedAwaitingQaHead(inspection) ? (
                 <div className="text-center py-8 text-muted-foreground">
-                  <p className="font-medium">Part III — Not Applicable</p>
+                  <p className="font-medium">Part III — Not Applicable yet</p>
                   <p className="text-sm mt-1">
-                    Part I 19(f) joint inspection is <strong>No</strong>. ORDAQA Part III does
-                    not apply — after QA Head nominates Team Head – QA and inspectors are assigned,
-                    proceed to <strong>Part IV</strong>.
+                    Part I DGAQA (ORDAQA) involvement is <strong>No</strong>. QA Head can still enable{' '}
+                    <strong>Forward to ORDAQA for Joint Inspection</strong> in Part II. Until then, proceed
+                    to <strong>Part IV</strong> after inspectors are assigned.
                   </p>
                 </div>
               ) : (
@@ -3074,6 +3447,11 @@ export default function InspectionDetailPage() {
                   isForwarded &&
                   canEditSection23 &&
                   (permissions.isOrdaqaHead() || permissions.isAdmin());
+                const awaitingOutstation =
+                  isForwarded &&
+                  part2OutstationDetailsIncomplete(inspection) &&
+                  !showSection23;
+
                 const isReforwarded = ordaqaHeadReforwardActionRequired({
                   ...inspection,
                   has_memo_return_activity: (inspection.activities || []).some(
@@ -3093,14 +3471,32 @@ export default function InspectionDetailPage() {
                   </div>
                 ) : null;
 
+                if (awaitingOutstation) {
+                  return (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p className="font-medium">Part III — Awaiting Outstation details</p>
+                      <p className="text-sm mt-1">
+                        Assigned R&amp;QA Inspector must complete Part II Outstation Inspection
+                        (Email Sent, Name &amp; Sign, Date &amp; Time) before ORDAQA Head can fill Section 23.
+                      </p>
+                    </div>
+                  );
+                }
+
                 if (!isForwarded && !showSection23) {
                   if (jointInspectionRequestedInPart1(inspection)) {
                     return (
                       <div className="text-center py-8 text-muted-foreground">
                         <p className="font-medium">Part III — Awaiting ORDAQA forward</p>
                         <p className="text-sm mt-1">
-                          Part I requested joint inspection with ORDAQA. QA Head must enable{' '}
-                          <strong>Forward to ORDAQA</strong> in Part II before Section 23 can be completed.
+                          {inspectionSkipsRqaPart2AndPart4(inspection)
+                            ? 'Part I marked DGAQA (ORDAQA) involvement as Yes (R&QA No). After Part I approval the IR is auto-forwarded to ORDAQA for Section 23.'
+                            : (
+                              <>
+                                Part I marked DGAQA (ORDAQA) involvement as Yes. QA Head must enable{' '}
+                                <strong>Forward to ORDAQA</strong> in Part II before Section 23 can be completed.
+                              </>
+                            )}
                         </p>
                       </div>
                     );
@@ -3229,6 +3625,15 @@ export default function InspectionDetailPage() {
               <CardDescription>Sections 26–29 — Inspection details, results, observations & sign-off</CardDescription>
             </CardHeader>
             <CardContent>
+              {inspectionSkipsRqaPart2AndPart4(inspection) ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="font-medium">Part IV — Not Applicable</p>
+                  <p className="text-sm mt-1">
+                    Part I R&amp;QA involvement is <strong>No</strong> — Part IV is not required.
+                  </p>
+                </div>
+              ) : (
+              <>
               {(() => {
                 const canEditPart4 = canUserUpdatePart4(
                   inspection,
@@ -3317,6 +3722,36 @@ export default function InspectionDetailPage() {
                           </p>
                         </div>
                       )}
+                      {canUserInspectorOutstationRejectOrSendBack(
+                        inspection,
+                        permissions.userId,
+                        permissions.userRole
+                      ) && (
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setInspectorSendBackComment('');
+                              setInspectorSendBackDialogOpen(true);
+                            }}
+                          >
+                            <RotateCcw className="mr-2 h-4 w-4" />
+                            Send back
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            onClick={() => {
+                              setInspectorRejectComment('');
+                              setInspectorRejectDialogOpen(true);
+                            }}
+                          >
+                            <XCircle className="mr-2 h-4 w-4" />
+                            Reject with comments
+                          </Button>
+                        </div>
+                      )}
                       <Part4Form
                         inspection={inspection}
                         onComplete={fetchInspection}
@@ -3371,7 +3806,7 @@ export default function InspectionDetailPage() {
                       {skipPart23
                         ? permissions.userRole === 'inspector'
                           ? 'Part IV opens after Request Approver forward (Forwarded status)'
-                          : 'Only an R&QA Inspector can fill Part IV when joint inspection was not requested in Part I'
+                          : 'Only an R&QA Inspector can fill Part IV when DGAQA (ORDAQA) was not involved in Part I'
                         : isAssignedInspector
                           ? 'You are assigned, but Part IV cannot be edited in the current status. Refresh the page or contact support if this persists.'
                           : hasInspectorsAssignedInsp(inspection)
@@ -3411,6 +3846,8 @@ export default function InspectionDetailPage() {
                 </div>
                 
               </div>
+              </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -3421,7 +3858,8 @@ export default function InspectionDetailPage() {
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Part V — ORDAQA (Sections 24–25)</CardTitle>
               <CardDescription>
-                After Part IV — inspection remarks and clearance (assigned or delegated user from Part III Section 23)
+                Inspection remarks and clearance (assigned or delegated user from Part III Section 23).
+                When R&amp;QA is involved, complete after Part IV; when only DGAQA (ORDAQA) is involved, complete after Part III.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -3443,20 +3881,20 @@ export default function InspectionDetailPage() {
                 const p5Submitted = ordqaPart5Submitted(inspection);
                 const p5Approved = ordqaPart5Approved(inspection);
 
-                if (!needsP5 || inspectionSkipsPart2Part3(inspection)) {
+                if (!needsP5) {
                   return (
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Part V — Not Applicable</p>
                       <p className="text-sm mt-1">
                         {inspectionSkipsPart2Part3(inspection)
-                          ? 'Part I 19(f) joint inspection is No — ORDAQA Part V does not apply'
-                          : 'Part I 19(f) joint inspection was not requested — ORDAQA Part V does not apply'}
+                          ? 'Part I DGAQA (ORDAQA) involvement is No. QA Head can enable Forward to ORDAQA in Part II if Part V is required.'
+                          : 'Part I DGAQA (ORDAQA) was not involved — ORDAQA Part V does not apply'}
                       </p>
                     </div>
                   );
                 }
 
-                if (!inspectionPart4Saved(inspection)) {
+                if (!inspectionSkipsRqaPart2AndPart4(inspection) && !inspectionPart4Saved(inspection)) {
                   return (
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Complete Part IV first</p>
@@ -3467,7 +3905,10 @@ export default function InspectionDetailPage() {
                   );
                 }
 
-                if (!part4ApprovedByTeamHead(inspection)) {
+                if (
+                  !inspectionSkipsRqaPart2AndPart4(inspection) &&
+                  !part4ApprovedByTeamHead(inspection)
+                ) {
                   return (
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">
@@ -4392,6 +4833,22 @@ function Part2Display({ inspection }: { inspection: InspectionRequest }) {
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Team Head – QA Comments</td>
               <td className="px-4 py-2.5 whitespace-pre-wrap">{d.team_head_comments || '—'}</td>
             </tr>
+            {String(d.inspector_send_back_comment || '').trim() && (
+              <tr>
+                <td className="bg-muted/50 px-4 py-2.5 font-medium">Inspector send-back comment</td>
+                <td className="px-4 py-2.5 whitespace-pre-wrap text-amber-900 dark:text-amber-200">
+                  {String(d.inspector_send_back_comment)}
+                </td>
+              </tr>
+            )}
+            {String(d.inspector_reject_comment || '').trim() && (
+              <tr>
+                <td className="bg-muted/50 px-4 py-2.5 font-medium">Inspector reject comment</td>
+                <td className="px-4 py-2.5 whitespace-pre-wrap text-red-800 dark:text-red-300">
+                  {String(d.inspector_reject_comment)}
+                </td>
+              </tr>
+            )}
             <tr>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">R&QA Rep (Inspector / QA Rep)</td>
               <td className="px-4 py-2.5">
@@ -4453,9 +4910,21 @@ function Part2Display({ inspection }: { inspection: InspectionRequest }) {
               <tr>
                 <td className="bg-muted/50 px-4 py-2.5 font-medium">Email Sent</td>
                 <td className="px-4 py-2.5">
-                  {d.email_sent || '—'}
-                  {d.email_sent_by ? ` — ${d.email_sent_by}` : ''}
-                  {d.email_sent_date ? ` (${d.email_sent_date})` : ''}
+                  {d.email_sent_by || d.email_sent_date || (d.email_sent && String(d.email_sent).trim()) ? (
+                    <>
+                      {String(d.email_sent || '').toLowerCase() === 'yes'
+                        ? 'Yes'
+                        : String(d.email_sent || '').toLowerCase() === 'no'
+                          ? 'No'
+                          : d.email_sent || '—'}
+                      {d.email_sent_by ? ` — ${d.email_sent_by}` : ''}
+                      {d.email_sent_date ? ` (${d.email_sent_date})` : ''}
+                    </>
+                  ) : (
+                    <span className="text-amber-700 dark:text-amber-400">
+                      Pending — R&amp;QA Inspector to fill Email Sent, Name &amp; Sign, Date &amp; Time
+                    </span>
+                  )}
                 </td>
               </tr>
             )}
@@ -4496,7 +4965,7 @@ function Part2Step1Form({
   lockTeamHeadSelection?: boolean;
   /** After ORDAQA memo return — QA Head must re-enable Forward to ORDAQA and resubmit. */
   memoResubmit?: boolean;
-  /** Part I 19(f) No — Team Head selection only; hide Forward to ORDAQA. */
+  /** When true, the Forward to ORDAQA switch is locked off. */
   disableForwardToOrdqa?: boolean;
   onComplete: () => Promise<void> | void;
   onSuccess?: (message: string) => void;
@@ -4724,7 +5193,7 @@ function Part2Step1Form({
           </div>
           {disableForwardToOrdqa && (
             <p className="text-xs text-muted-foreground pl-11">
-              Not available — Part I 19(f) joint inspection is No.
+              Not available — Part I DGAQA (ORDAQA) involvement is No.
             </p>
           )}
           {memoResubmit && !disableForwardToOrdqa && form.return_to_designer !== 'yes' && (
@@ -4797,7 +5266,7 @@ function Part2Step1Form({
             : memoResubmit
               ? 'Resubmit Part II to ORDAQA'
               : inspection?.nominated_team_head_id
-                ? 'Save Part II updates'
+                ? 'Forward to TH'
                 : 'Save Part II & Forward to TH'}
       </Button>
     </div>
@@ -4820,17 +5289,11 @@ function Part2Step2Form({
   const [loading, setLoading] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const emailSentRef = useRef<HTMLSelectElement | null>(null);
-  const emailSentByRef = useRef<HTMLInputElement | null>(null);
-  const emailSentDateRef = useRef<HTMLInputElement | null>(null);
   const submitErrorRef = useRef<HTMLDivElement | null>(null);
   const d = parseJsonObj(inspection.part2_data);
   const [agencyForm, setAgencyForm] = useState({
     third_party_agency: String(d.third_party_agency || ''),
     outstation_inspection: !!d.outstation_inspection,
-    email_sent: String(d.email_sent || 'no'),
-    email_sent_by: String(d.email_sent_by || ''),
-    email_sent_date: String(d.email_sent_date || ''),
     team_head_comments: String(d.team_head_comments || ''),
   });
 
@@ -4866,9 +5329,6 @@ function Part2Step2Form({
     setAgencyForm({
       third_party_agency: String(p2.third_party_agency || ''),
       outstation_inspection: !!p2.outstation_inspection,
-      email_sent: String(p2.email_sent || 'no'),
-      email_sent_by: String(p2.email_sent_by || ''),
-      email_sent_date: String(p2.email_sent_date || ''),
       team_head_comments: String(p2.team_head_comments || ''),
     });
     setFieldErrors({});
@@ -4898,43 +5358,14 @@ function Part2Step2Form({
     if (selectedInspectors.length === 0) {
       errors.inspectors = 'Select at least one Inspector / QA Rep';
     }
-    if (agencyForm.outstation_inspection) {
-      if (!agencyForm.email_sent || !['yes', 'no'].includes(agencyForm.email_sent)) {
-        errors.email_sent = 'Email Sent is required';
-      }
-      if (!agencyForm.email_sent_by.trim()) {
-        errors.email_sent_by = 'Name & Sign is required';
-      }
-      if (!agencyForm.email_sent_date.trim()) {
-        errors.email_sent_date = 'Date & Time is required';
-      }
-    }
     const firstKey = Object.keys(errors)[0] || null;
-    const message = firstKey
-      ? firstKey.startsWith('email_') || firstKey === 'email_sent'
-        ? `Outstation Inspection: ${errors[firstKey]}`
-        : errors[firstKey]
-      : '';
+    const message = firstKey ? errors[firstKey] : '';
     return { errors, firstKey, message };
   };
 
-  const focusFirstError = (firstKey: string | null) => {
-    const el =
-      firstKey === 'email_sent'
-        ? emailSentRef.current
-        : firstKey === 'email_sent_by'
-          ? emailSentByRef.current
-          : firstKey === 'email_sent_date'
-            ? emailSentDateRef.current
-            : submitErrorRef.current;
+  const focusFirstError = (_firstKey: string | null) => {
+    const el = submitErrorRef.current;
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    if (el && 'focus' in el && typeof (el as HTMLElement).focus === 'function') {
-      try {
-        (el as HTMLElement).focus({ preventScroll: true });
-      } catch {
-        /* ignore */
-      }
-    }
   };
 
   const handleSubmit = async () => {
@@ -4959,9 +5390,6 @@ function Part2Step2Form({
           part2_data: {
             third_party_agency: agencyForm.third_party_agency,
             outstation_inspection: agencyForm.outstation_inspection,
-            email_sent: agencyForm.outstation_inspection ? agencyForm.email_sent : null,
-            email_sent_by: agencyForm.outstation_inspection ? agencyForm.email_sent_by.trim() : null,
-            email_sent_date: agencyForm.outstation_inspection ? agencyForm.email_sent_date : null,
             team_head_comments: agencyForm.team_head_comments.trim(),
           },
         }),
@@ -4981,8 +5409,6 @@ function Part2Step2Form({
     } catch { setSaveMsg('Error saving'); } finally { setLoading(false); }
   };
 
-  const sel = 'w-full px-3 py-2 text-sm rounded-md border border-input bg-background';
-  const errInput = 'border-destructive focus-visible:ring-destructive';
   const isError = saveMsg && saveMsg !== 'Assigned inspector saved';
 
   return (
@@ -4996,7 +5422,7 @@ function Part2Step2Form({
       <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
         <p className="text-sm font-medium text-foreground">Team Head – QA (after QA Head Part II)</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Add your comments, then complete third-party / outstation details and inspector assignment.
+          Add your comments, enable Outstation if needed, then assign inspector(s). Email Sent / Name &amp; Sign / Date &amp; Time are filled by the R&amp;QA Inspector.
         </p>
       </div>
       <div className="space-y-2">
@@ -5012,7 +5438,7 @@ function Part2Step2Form({
       <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
         <p className="text-sm font-medium text-foreground">Third party / outstation — Part II (R&amp;QA Team Head)</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Fill third-party agency and outstation details as applicable.
+          Fill third-party agency and turn on Outstation Inspection if applicable.
         </p>
       </div>
       <div className="space-y-2">
@@ -5030,74 +5456,19 @@ function Part2Step2Form({
             setAgencyForm((prev) => ({
               ...prev,
               outstation_inspection: v,
-              email_sent: v ? prev.email_sent || 'no' : prev.email_sent,
             }));
-            if (!v) setFieldErrors({});
           }}
           className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
         />
         <Label>Outstation Inspection</Label>
       </div>
       {agencyForm.outstation_inspection && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pl-4 border-l-2 border-blue-200 dark:border-blue-800">
-          <div className="space-y-2">
-            <Label>
-              Email Sent <span className="text-destructive">*</span>
-            </Label>
-            <select
-              ref={emailSentRef}
-              value={agencyForm.email_sent || 'no'}
-              onChange={(e) => {
-                setAgencyForm({ ...agencyForm, email_sent: e.target.value });
-                clearFieldError('email_sent');
-              }}
-              className={`${sel} ${fieldErrors.email_sent ? errInput : ''}`}
-              aria-invalid={!!fieldErrors.email_sent}
-            >
-              <option value="no">No</option>
-              <option value="yes">Yes</option>
-            </select>
-            {fieldErrors.email_sent && (
-              <p className="text-xs text-destructive">{fieldErrors.email_sent}</p>
-            )}
-          </div>
-          <div className="space-y-2">
-            <Label>
-              Name &amp; Sign <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              ref={emailSentByRef}
-              value={agencyForm.email_sent_by}
-              onChange={(e) => {
-                setAgencyForm({ ...agencyForm, email_sent_by: e.target.value });
-                clearFieldError('email_sent_by');
-              }}
-              className={fieldErrors.email_sent_by ? errInput : undefined}
-              aria-invalid={!!fieldErrors.email_sent_by}
-            />
-            {fieldErrors.email_sent_by && (
-              <p className="text-xs text-destructive">{fieldErrors.email_sent_by}</p>
-            )}
-          </div>
-          <div className="space-y-2">
-            <Label>
-              Date &amp; Time <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              ref={emailSentDateRef}
-              type="datetime-local"
-              value={agencyForm.email_sent_date}
-              onChange={(e) => {
-                setAgencyForm({ ...agencyForm, email_sent_date: e.target.value });
-                clearFieldError('email_sent_date');
-              }}
-              className={fieldErrors.email_sent_date ? errInput : undefined}
-              aria-invalid={!!fieldErrors.email_sent_date}
-            />
-            {fieldErrors.email_sent_date && (
-              <p className="text-xs text-destructive">{fieldErrors.email_sent_date}</p>
-            )}
-          </div>
+        <div className="rounded-md border border-blue-200 bg-blue-50/80 px-3 py-2 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
+          <p className="font-medium">Outstation enabled</p>
+          <p className="text-xs mt-0.5 text-blue-900/80 dark:text-blue-200/90">
+            Assigned R&amp;QA Inspector will fill <strong>Email Sent</strong>, <strong>Name &amp; Sign</strong>, and{' '}
+            <strong>Date &amp; Time</strong> in Part II after assignment.
+          </p>
         </div>
       )}
 
@@ -5167,6 +5538,200 @@ function Part2Step2Form({
             ? `Save Inspector Assignment (${selectedInspectors.length})`
             : `Complete Part II — Assign ${selectedInspectors.length} Inspector(s)`}
       </Button>
+    </div>
+  );
+}
+
+/** Assigned R&QA Inspector fills outstation Email Sent / Name & Sign / Date & Time after Team Head enables Outstation. */
+function Part2InspectorOutstationForm({
+  inspection,
+  onComplete,
+  onSuccess,
+  showRejectSendBack = false,
+  onReject,
+  onSendBack,
+}: {
+  inspection: InspectionRequest;
+  onComplete: () => Promise<void> | void;
+  onSuccess?: (message: string) => void;
+  showRejectSendBack?: boolean;
+  onReject?: () => void;
+  onSendBack?: () => void;
+}) {
+  const d = parseJsonObj(inspection.part2_data);
+  const [form, setForm] = useState({
+    email_sent: d.email_sent === 'yes' || d.email_sent === 'no' ? String(d.email_sent) : '',
+    email_sent_by: String(d.email_sent_by || ''),
+    email_sent_date: String(d.email_sent_date || ''),
+  });
+  const [loading, setLoading] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const p2 = parseJsonObj(inspection.part2_data);
+    setForm({
+      email_sent: p2.email_sent === 'yes' || p2.email_sent === 'no' ? String(p2.email_sent) : '',
+      email_sent_by: String(p2.email_sent_by || ''),
+      email_sent_date: String(p2.email_sent_date || ''),
+    });
+    setFieldErrors({});
+  }, [inspection.id, inspection.part2_data]);
+
+  const sel = 'w-full px-3 py-2 text-sm rounded-md border border-input bg-background';
+  const errInput = 'border-destructive focus-visible:ring-destructive';
+
+  const handleSave = async () => {
+    const errors: Record<string, string> = {};
+    if (!form.email_sent || !['yes', 'no'].includes(form.email_sent)) {
+      errors.email_sent = 'Email Sent is required';
+    }
+    if (!form.email_sent_by.trim()) {
+      errors.email_sent_by = 'Name & Sign is required';
+    }
+    if (!form.email_sent_date.trim()) {
+      errors.email_sent_date = 'Date & Time is required';
+    }
+    if (Object.keys(errors).length) {
+      setFieldErrors(errors);
+      setSaveMsg(Object.values(errors)[0]);
+      return;
+    }
+    setLoading(true);
+    setSaveMsg('');
+    setFieldErrors({});
+    try {
+      const res = await fetch(`/api/inspection-requests/${inspection.id}/workflow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_part2_inspector_details',
+          part2_data: {
+            email_sent: form.email_sent,
+            email_sent_by: form.email_sent_by.trim(),
+            email_sent_date: form.email_sent_date,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onSuccess?.(data.message || 'Outstation details saved');
+        await onComplete();
+        setSaveMsg(data.message || 'Outstation details saved');
+      } else {
+        setSaveMsg(data.error || 'Failed');
+      }
+    } catch {
+      setSaveMsg('Error saving');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div id="part2-outstation-inspector-form" className="space-y-4 scroll-mt-20">
+      <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
+        <p className="text-sm font-medium text-foreground">Outstation details — R&amp;QA Inspector</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Team Head – QA enabled Outstation Inspection. Fill Email Sent, Name &amp; Sign, and Date &amp; Time.
+        </p>
+      </div>
+      {saveMsg && (
+        <div
+          className={`px-3 py-2 rounded-md border text-sm ${
+            /fail|error|required|forbidden/i.test(saveMsg)
+              ? 'bg-destructive/10 border-destructive/30 text-destructive'
+              : 'bg-green-50 border-green-200 text-green-800 dark:bg-green-900/30 dark:border-green-800 dark:text-green-300'
+          }`}
+        >
+          {saveMsg}
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pl-4 border-l-2 border-blue-200 dark:border-blue-800">
+        <div className="space-y-2">
+          <Label>
+            Email Sent <span className="text-destructive">*</span>
+          </Label>
+          <select
+            value={form.email_sent}
+            onChange={(e) => {
+              setForm({ ...form, email_sent: e.target.value });
+              setFieldErrors((prev) => {
+                const next = { ...prev };
+                delete next.email_sent;
+                return next;
+              });
+            }}
+            className={`${sel} ${fieldErrors.email_sent ? errInput : ''}`}
+          >
+            <option value="">Select…</option>
+            <option value="no">No</option>
+            <option value="yes">Yes</option>
+          </select>
+          {fieldErrors.email_sent && (
+            <p className="text-xs text-destructive">{fieldErrors.email_sent}</p>
+          )}
+        </div>
+        <div className="space-y-2">
+          <Label>
+            Name &amp; Sign <span className="text-destructive">*</span>
+          </Label>
+          <Input
+            value={form.email_sent_by}
+            onChange={(e) => {
+              setForm({ ...form, email_sent_by: e.target.value });
+              setFieldErrors((prev) => {
+                const next = { ...prev };
+                delete next.email_sent_by;
+                return next;
+              });
+            }}
+            className={fieldErrors.email_sent_by ? errInput : undefined}
+            placeholder="Inspector name / sign"
+          />
+          {fieldErrors.email_sent_by && (
+            <p className="text-xs text-destructive">{fieldErrors.email_sent_by}</p>
+          )}
+        </div>
+        <div className="space-y-2">
+          <Label>
+            Date &amp; Time <span className="text-destructive">*</span>
+          </Label>
+          <Input
+            type="datetime-local"
+            value={form.email_sent_date}
+            onChange={(e) => {
+              setForm({ ...form, email_sent_date: e.target.value });
+              setFieldErrors((prev) => {
+                const next = { ...prev };
+                delete next.email_sent_date;
+                return next;
+              });
+            }}
+            className={fieldErrors.email_sent_date ? errInput : undefined}
+          />
+          {fieldErrors.email_sent_date && (
+            <p className="text-xs text-destructive">{fieldErrors.email_sent_date}</p>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Button type="button" onClick={() => void handleSave()} disabled={loading}>
+          {loading ? 'Saving...' : 'Save Outstation Details'}
+        </Button>
+        {showRejectSendBack && (
+          <>
+            <Button type="button" variant="outline" disabled={loading} onClick={() => onSendBack?.()}>
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Send back
+            </Button>
+            <Button type="button" variant="destructive" disabled={loading} onClick={() => onReject?.()}>
+              <XCircle className="mr-2 h-4 w-4" />
+              Reject with comments
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -5373,7 +5938,7 @@ function Part3Section23Display({ data, inspection }: { data: Record<string, any>
   );
 }
 
-/** Part III Section 23 — ORDAQA Head / admin: Section 23 fields + Assigned (ORDAQA Inspector list) vs Delegated (Inspector / QA). */
+/** Part III Section 23 — ORDAQA Head / admin: Section 23 fields + Assigned (ORDAQA Inspector) vs Delegated (Part II R&QA inspectors only). */
 function Part3AssignForm({
   inspection,
   inspectionId,
@@ -5402,7 +5967,6 @@ function Part3AssignForm({
     inspection.ordaqa_inspector_id != null ? String(inspection.ordaqa_inspector_id) : ''
   );
   const [ordaqaInspectors, setOrdaqaInspectors] = useState<any[]>([]);
-  const [qaUsers, setQaUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const alreadySaved = part3Section23HasSavedData(inspection);
@@ -5410,6 +5974,16 @@ function Part3AssignForm({
   const sel = "w-full px-3 py-2 text-sm rounded-md border border-input bg-background";
 
   const loggedInOicName = session?.user?.name?.trim() || '';
+
+  /** Part II R&QA inspector(s) assigned by Team Head – QA — only these may be chosen when Delegated. */
+  const part2AssignedInspectors = resolveAssignedInspectorsForDisplay(inspection)
+    .filter((i) => i.id != null && Number(i.id) > 0)
+    .map((i) => ({
+      id: Number(i.id),
+      name: i.name,
+      employee_id: i.employee_id,
+      designation: i.designation,
+    }));
 
   useEffect(() => {
     if (!loggedInOicName) return;
@@ -5444,14 +6018,14 @@ function Part3AssignForm({
       .then((r) => r.json())
       .then((d) => setOrdaqaInspectors(d.users || []))
       .catch(() => {});
-    fetch('/api/users?roles=inspector,qa_approver&status=active')
-      .then((r) => r.json())
-      .then((d) => setQaUsers(d.users || []))
-      .catch(() => {});
   }, []);
 
   const availableUsers =
-    delegationType === 'assigned' ? ordaqaInspectors : delegationType === 'delegated' ? qaUsers : [];
+    delegationType === 'assigned'
+      ? ordaqaInspectors
+      : delegationType === 'delegated'
+        ? part2AssignedInspectors
+        : [];
 
   const memoReturnYes = form.memo_returned === 'yes';
 
@@ -5460,7 +6034,7 @@ function Part3AssignForm({
       ? 'Select Assigned or Delegated first'
       : delegationType === 'assigned'
         ? 'ORDAQA Inspector'
-        : 'Delegated to (Inspector / QA Rep or Team Head - QA)';
+        : 'Delegated to (Part II R&QA Inspector)';
 
   const handleMemoReturnedChange = (memo_returned: string) => {
     setForm((prev) => ({ ...prev, memo_returned }));
@@ -5645,7 +6219,7 @@ function Part3AssignForm({
               <option value="">
                 {delegationType === 'assigned'
                   ? 'Select ORDAQA Inspector...'
-                  : 'Select Inspector / QA Rep or Team Head - QA...'}
+                  : 'Select Part II assigned R&QA Inspector...'}
               </option>
               {availableUsers.map((u) => (
                 <option key={u.id} value={u.id}>
@@ -5659,8 +6233,16 @@ function Part3AssignForm({
           {delegationType === 'assigned' && ordaqaInspectors.length === 0 && (
             <p className="text-xs text-amber-700 dark:text-amber-400">No active ORDAQA Inspector users.</p>
           )}
-          {delegationType === 'delegated' && qaUsers.length === 0 && (
-            <p className="text-xs text-amber-700 dark:text-amber-400">No active Inspector / Team Head - QA users.</p>
+          {delegationType === 'delegated' && part2AssignedInspectors.length === 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              No R&amp;QA inspector assigned in Part II yet. Team Head – QA must assign inspector(s) first.
+            </p>
+          )}
+          {delegationType === 'delegated' && part2AssignedInspectors.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Only the R&amp;QA inspector(s) assigned in Part II can be selected — that person completes Part V
+              (Sections 24–25).
+            </p>
           )}
         </div>
       </div>
