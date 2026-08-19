@@ -49,6 +49,7 @@ const TYPE_CONFIG: Record<string, { icon: typeof Info; color: string; bg: string
   part4_pending_team_head_approval: { icon: Clock, color: 'text-orange-600', bg: 'bg-orange-50 dark:bg-orange-950/40' },
   part4_team_head_rejected:   { icon: RotateCcw, color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-950/40' },
   part4_team_head_approved:   { icon: CheckCircle2, color: 'text-emerald-600', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
+  part4_team_head_edited:     { icon: FileText, color: 'text-sky-600', bg: 'bg-sky-50 dark:bg-sky-950/40' },
   part4_forwarded_for_part5:  { icon: FileText, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-950/40' },
   part3_completed:            { icon: FileText, color: 'text-violet-600', bg: 'bg-violet-50 dark:bg-violet-950/40' },
   ordaqa_delegated_to_rqa:    { icon: FileText, color: 'text-indigo-600', bg: 'bg-indigo-50 dark:bg-indigo-950/40' },

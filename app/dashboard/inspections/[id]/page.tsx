@@ -71,6 +71,8 @@ import {
   canUserCompleteInspection,
   canUserApproveOrdqaPart5,
   canUserOrdqaHeadPart5SendBack,
+  canUserOrdqaHeadReject,
+  canUserOrdqaHeadEditPart5,
   canUserUpdatePart5,
   canUserApprovePart4,
   canUserRejectPart4,
@@ -84,6 +86,10 @@ import {
   ordqaPart5Completed,
   ordqaPart5ReturnedToInspector,
   getPart5HeadSendBackComment,
+  getPart5HeadEditInfo,
+  getPart4TeamHeadEditInfo,
+  type Part5FieldChange,
+  type Part4FieldChange,
   isForwardedToOrdqa,
   part3Section23HasSavedData,
   part3CompleteForOrdqaWorkflow,
@@ -115,11 +121,16 @@ import {
   ordaqaHeadReforwardActionRequired,
   resolveInspectionCustody,
   formatInspectionCustodyLine,
+  formatInspectionActivityType,
+  formatInspectionActivityDescription,
+  resolveInspectionRejection,
+  part1VenueIsOutstation,
 } from '@/lib/inspection-display';
 import {
   parsePart1CertifierEditSummary,
   type Part1FieldChange,
 } from '@/lib/part1-field-diff';
+import { LOG_BOOK_MAX_BYTES, formatPart1Quantity } from '@/lib/part1-so-fields';
 import {
   shouldHighlightInspectorName,
   resolveStartCompleteInspectorName,
@@ -151,6 +162,112 @@ function part1RowClass(changed: boolean): string | undefined {
   return changed
     ? 'bg-amber-50/90 dark:bg-amber-950/20 ring-1 ring-inset ring-amber-200/60 dark:ring-amber-800/50'
     : undefined;
+}
+
+function part5ChangedClass(changed: boolean): string | undefined {
+  return changed
+    ? 'bg-violet-50/95 dark:bg-violet-950/35 ring-1 ring-inset ring-violet-300/80 dark:ring-violet-700/60'
+    : undefined;
+}
+
+function part4ChangedClass(changed: boolean): string | undefined {
+  return changed
+    ? 'bg-sky-50/95 dark:bg-sky-950/35 ring-1 ring-inset ring-sky-300/80 dark:ring-sky-700/60'
+    : undefined;
+}
+
+function Part4FromTo({
+  change,
+  compact = false,
+}: {
+  change?: Part4FieldChange;
+  compact?: boolean;
+}) {
+  if (!change) return null;
+  return (
+    <p className={`text-xs text-sky-900 dark:text-sky-100 ${compact ? 'mt-1' : 'mt-1.5'}`}>
+      {!compact && <span className="font-semibold">{change.label}: </span>}
+      <span className="whitespace-pre-wrap line-through decoration-sky-500/50 opacity-80">{change.from}</span>
+      {' → '}
+      <span className="font-medium whitespace-pre-wrap">{change.to}</span>
+    </p>
+  );
+}
+
+function Part5FromTo({
+  change,
+  compact = false,
+}: {
+  change?: Part5FieldChange;
+  compact?: boolean;
+}) {
+  if (!change) return null;
+  return (
+    <p className={`text-xs text-violet-900 dark:text-violet-100 ${compact ? 'mt-1' : 'mt-1.5'}`}>
+      {!compact && <span className="font-semibold">{change.label}: </span>}
+      <span className="whitespace-pre-wrap">{change.from}</span>
+      {' → '}
+      <span className="font-medium whitespace-pre-wrap">{change.to}</span>
+    </p>
+  );
+}
+
+function canSeePart5HeadChanges(
+  inspection: {
+    ordaqa_inspector_id?: number | null;
+    part3_completed_by?: number | null;
+  },
+  permissions: {
+    userId: number;
+    isOrdaqaHead: () => boolean;
+    isOrdaqaInspector: () => boolean;
+  }
+): boolean {
+  if (permissions.isOrdaqaHead()) return false;
+  if (permissions.isOrdaqaInspector()) return true;
+  const uid = Number(permissions.userId);
+  if (!Number.isFinite(uid) || uid < 1) return false;
+  if (Number(inspection.ordaqa_inspector_id) === uid) return true;
+  if (Number(inspection.part3_completed_by) === uid) return true;
+  return false;
+}
+
+function canSeePart4TeamHeadChanges(
+  inspection: {
+    inspector_id?: number | null;
+    inspector_ids?: unknown;
+    assigned_inspectors?: Array<{ id?: number | null }> | null;
+    part4_completed_by?: number | null;
+    nominated_team_head_id?: number | null;
+  },
+  permissions: {
+    userId: number;
+    userRole?: string;
+    isQaApprover: () => boolean;
+    isAdmin: () => boolean;
+  }
+): boolean {
+  if (permissions.isQaApprover() && !permissions.isAdmin()) return false;
+  const uid = Number(permissions.userId);
+  if (inspection.nominated_team_head_id != null && Number(inspection.nominated_team_head_id) === uid) {
+    return false;
+  }
+  if (permissions.userRole === 'inspector') return true;
+  if (!Number.isFinite(uid) || uid < 1) return false;
+  if (isUserAssignedPart2Inspector(inspection, uid)) return true;
+  if (Number(inspection.part4_completed_by) === uid) return true;
+  return permissions.isAdmin();
+}
+
+function Part5ChangeList({ changes }: { changes: Part5FieldChange[] }) {
+  if (!changes.length) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      {changes.map((c) => (
+        <Part5FromTo key={c.key} change={c} />
+      ))}
+    </div>
+  );
 }
 
 function parseJsonArray(val: any): string[] {
@@ -361,6 +478,7 @@ interface InspectionRequest {
   inspection_date_from?: string;
   inspection_date_to?: string;
   venue?: string;
+  location?: string;
   document_details?: Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string }>;
   confirmations?: Record<string, string>;
   designer_rep_name?: string;
@@ -525,10 +643,10 @@ export default function InspectionDetailPage() {
   const [qaRejectReason, setQaRejectReason] = useState('');
   const [part5SendBackDialogOpen, setPart5SendBackDialogOpen] = useState(false);
   const [part5SendBackComment, setPart5SendBackComment] = useState('');
+  const [part5RejectDialogOpen, setPart5RejectDialogOpen] = useState(false);
+  const [part5RejectReason, setPart5RejectReason] = useState('');
   const [part4RejectDialogOpen, setPart4RejectDialogOpen] = useState(false);
   const [part4RejectComment, setPart4RejectComment] = useState('');
-  const [inspectorRejectDialogOpen, setInspectorRejectDialogOpen] = useState(false);
-  const [inspectorRejectComment, setInspectorRejectComment] = useState('');
   const [inspectorSendBackDialogOpen, setInspectorSendBackDialogOpen] = useState(false);
   const [inspectorSendBackComment, setInspectorSendBackComment] = useState('');
 
@@ -1129,6 +1247,104 @@ export default function InspectionDetailPage() {
           </button>
         </div>
       )}
+      {(() => {
+        const rejection = resolveInspectionRejection(inspection);
+        if (!rejection || String(inspection.status || '') !== 'rejected') return null;
+        return (
+          <div className="rounded-lg border border-red-300 bg-red-50/95 px-4 py-3 text-sm text-red-950 dark:border-red-800 dark:bg-red-950/40 dark:text-red-100">
+            <p className="font-medium">{rejection.byLabel}</p>
+            {rejection.reason ? (
+              <p className="mt-1 text-red-900/90 dark:text-red-200/90 whitespace-pre-wrap">{rejection.reason}</p>
+            ) : null}
+            <p className="mt-2 text-xs text-red-800/80 dark:text-red-300/90">
+              This comment is visible to all stakeholders on this inspection request.
+            </p>
+          </div>
+        );
+      })()}
+      {(() => {
+        const headEdit = getPart5HeadEditInfo(inspection);
+        if (
+          !headEdit ||
+          !canSeePart5HeadChanges(inspection, permissions) ||
+          String(inspection.status || '') === 'rejected'
+        ) {
+          return null;
+        }
+        return (
+          <div className="rounded-lg border border-violet-300 bg-violet-50/95 px-4 py-3 text-sm text-violet-950 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-100">
+            <p className="font-medium">ORDAQA Head updated Part V (Sections 24–25)</p>
+            <p className="mt-1 text-violet-900/90 dark:text-violet-200/90">
+              {headEdit.name}
+              {headEdit.at ? ` · ${fmtDate(headEdit.at)}` : ''}
+            </p>
+            {headEdit.changes.length > 0 ? (
+              <p className="mt-1 text-xs text-violet-800/90 dark:text-violet-300/90">
+                What changed:
+              </p>
+            ) : (
+              <p className="mt-1 text-xs">Open Part V to review the current values.</p>
+            )}
+            {headEdit.changes.length > 0 && (
+              <Part5ChangeList changes={headEdit.changes} />
+            )}
+            <Button
+              type="button"
+              size="sm"
+              className="mt-3"
+              onClick={() => goToTab('part5')}
+            >
+              View highlighted fields
+            </Button>
+          </div>
+        );
+      })()}
+      {(() => {
+        const thEdit = getPart4TeamHeadEditInfo(inspection);
+        if (
+          !thEdit ||
+          !canSeePart4TeamHeadChanges(inspection, permissions) ||
+          String(inspection.status || '') === 'rejected'
+        ) {
+          return null;
+        }
+        return (
+          <div className="rounded-lg border border-sky-300 bg-sky-50/95 px-4 py-3 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-100">
+            <p className="font-medium">Team Head – QA updated Part IV</p>
+            <p className="mt-1 text-sky-900/90 dark:text-sky-200/90">
+              {thEdit.name}
+              {thEdit.at ? ` · ${fmtDate(thEdit.at)}` : ''}
+            </p>
+            {thEdit.changes.length > 0 ? (
+              <p className="mt-1 text-xs text-sky-800/90 dark:text-sky-300/90">
+                What changed (inspector value → Team Head value):
+              </p>
+            ) : (
+              <p className="mt-1 text-xs">Open Part IV to review the current values.</p>
+            )}
+            {thEdit.changes.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {thEdit.changes.map((c) => (
+                  <p key={c.key} className="text-xs text-sky-900 dark:text-sky-100">
+                    <span className="font-semibold">{c.label}: </span>
+                    <span className="whitespace-pre-wrap line-through decoration-sky-500/50 opacity-80">{c.from}</span>
+                    {' → '}
+                    <span className="font-medium whitespace-pre-wrap">{c.to}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              className="mt-3"
+              onClick={() => goToTab('part4')}
+            >
+              View highlighted fields
+            </Button>
+          </div>
+        );
+      })()}
       {inspection.status === 'returned_to_designer' &&
         inspection.request_approver_send_back_comment &&
         !permissions.isRequestApprover() && (
@@ -1445,6 +1661,52 @@ export default function InspectionDetailPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={part5RejectDialogOpen} onOpenChange={setPart5RejectDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reject inspection request (ORDAQA Head)</DialogTitle>
+            <DialogDescription>
+              Permanently reject this IR. Enter comments explaining the rejection.
+              All stakeholders involved in this inspection will be notified and can see this comment on the IR.
+              This cannot be undone from the workflow.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="part5-reject-reason">Comment</Label>
+            <Textarea
+              id="part5-reject-reason"
+              rows={4}
+              placeholder="Comment"
+              value={part5RejectReason}
+              onChange={(e) => setPart5RejectReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setPart5RejectDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={async () => {
+                const trimmed = part5RejectReason.trim();
+                if (!trimmed) {
+                  showMessage('error', 'Please enter a comment.');
+                  return;
+                }
+                const ok = await handleWorkflowAction('ordaqa_head_reject', { reason: trimmed });
+                if (ok) {
+                  setPart5RejectReason('');
+                  setPart5RejectDialogOpen(false);
+                }
+              }}
+            >
+              Reject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={part4RejectDialogOpen} onOpenChange={setPart4RejectDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1528,51 +1790,6 @@ export default function InspectionDetailPage() {
                 if (ok) {
                   setQaRejectReason('');
                   setQaRejectDialogOpen(false);
-                }
-              }}
-            >
-              Reject
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={inspectorRejectDialogOpen} onOpenChange={setInspectorRejectDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Reject inspection request</DialogTitle>
-            <DialogDescription>
-              Permanently reject this IR as R&amp;QA Inspector. Enter a comment.
-              All stakeholders on this inspection request will be notified.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label htmlFor="inspector-reject-comment">Comment</Label>
-            <Textarea
-              id="inspector-reject-comment"
-              rows={4}
-              placeholder="Comment"
-              value={inspectorRejectComment}
-              onChange={(e) => setInspectorRejectComment(e.target.value)}
-            />
-          </div>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button type="button" variant="outline" onClick={() => setInspectorRejectDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={async () => {
-                const trimmed = inspectorRejectComment.trim();
-                if (!trimmed) {
-                  showMessage('error', 'Please enter a comment.');
-                  return;
-                }
-                const ok = await handleWorkflowAction('inspector_reject_ir', { comments: trimmed });
-                if (ok) {
-                  setInspectorRejectComment('');
-                  setInspectorRejectDialogOpen(false);
                 }
               }}
             >
@@ -1822,28 +2039,16 @@ export default function InspectionDetailPage() {
             permissions.userId,
             permissions.userRole
           ) && (
-            <>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setInspectorSendBackComment('');
-                  setInspectorSendBackDialogOpen(true);
-                }}
-              >
-                <RotateCcw className="mr-2 h-4 w-4" />
-                Send back
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setInspectorRejectComment('');
-                  setInspectorRejectDialogOpen(true);
-                }}
-              >
-                <XCircle className="mr-2 h-4 w-4" />
-                Reject with comments
-              </Button>
-            </>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setInspectorSendBackComment('');
+                setInspectorSendBackDialogOpen(true);
+              }}
+            >
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Send back
+            </Button>
           )}
           {canEditPart3Section23(inspection) &&
             (permissions.isOrdaqaHead() || permissions.isAdmin()) &&
@@ -1881,6 +2086,12 @@ export default function InspectionDetailPage() {
             <Button variant="outline" onClick={() => goToTab('part4')}>
               <Edit className="mr-2 h-4 w-4" />
               Edit Part IV
+            </Button>
+          )}
+          {canUserOrdqaHeadEditPart5(inspection, permissions.userRole) && (
+            <Button variant="outline" onClick={() => goToTab('part5')}>
+              <Edit className="mr-2 h-4 w-4" />
+              Edit Part V
             </Button>
           )}
           {canUserUpdatePart5(inspection, permissions.userId, permissions.userRole) && (
@@ -1971,6 +2182,19 @@ export default function InspectionDetailPage() {
             >
               <RotateCcw className="mr-2 h-4 w-4" />
               Send back Part V
+            </Button>
+          )}
+          {canUserOrdqaHeadReject(inspection, permissions.userRole) && (
+            <Button
+              variant="outline"
+              className="border-red-300 text-red-800 hover:bg-red-50 dark:border-red-800 dark:text-red-200 dark:hover:bg-red-950/40"
+              onClick={() => {
+                setPart5RejectReason('');
+                setPart5RejectDialogOpen(true);
+              }}
+            >
+              <XCircle className="mr-2 h-4 w-4" />
+              Reject
             </Button>
           )}
           {canUserApproveOrdqaPart5(inspection, permissions.userRole) && (
@@ -2554,8 +2778,8 @@ export default function InspectionDetailPage() {
                       <td className="px-4 py-2.5">
                         {inspection.quantity != null && inspection.quantity_per_set != null ? (
                           <span>
-                            {inspection.quantity} <span className="text-muted-foreground">—</span>{' '}
-                            {inspection.quantity_per_set}
+                            {formatPart1Quantity(inspection.quantity)} <span className="text-muted-foreground">—</span>{' '}
+                            {formatPart1Quantity(inspection.quantity_per_set)}
                           </span>
                         ) : (
                           '—'
@@ -2572,7 +2796,7 @@ export default function InspectionDetailPage() {
                       </td>
                       <td className="px-4 py-2.5">
                         {inspection.quantity != null && inspection.quantity_per_set == null
-                          ? inspection.quantity
+                          ? formatPart1Quantity(inspection.quantity)
                           : '—'}
                         {part1Changed('quantity') && inspection.quantity_per_set == null && (
                           <Part1RowEditNote changes={part1Notes('quantity')} />
@@ -3105,12 +3329,18 @@ export default function InspectionDetailPage() {
                 </div>
               </div>
 
-              {inspection.rejection_reason && (
-                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-                  <Label className="text-red-800 font-semibold text-xs">Rejection Reason</Label>
-                  <p className="mt-1 text-sm text-red-700">{inspection.rejection_reason}</p>
-                </div>
-              )}
+              {(() => {
+                const rejection = resolveInspectionRejection(inspection);
+                if (!rejection) return null;
+                return (
+                  <div className="bg-red-50 p-4 rounded-lg border border-red-200 dark:bg-red-950/30 dark:border-red-800">
+                    <Label className="text-red-800 dark:text-red-200 font-semibold text-xs">{rejection.byLabel}</Label>
+                    {rejection.reason ? (
+                      <p className="mt-1 text-sm text-red-700 dark:text-red-200 whitespace-pre-wrap">{rejection.reason}</p>
+                    ) : null}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-4 text-xs text-muted-foreground pt-2">
                 <div>Created: {fmtDateTime(inspection.created_at)}</div>
@@ -3309,10 +3539,6 @@ export default function InspectionDetailPage() {
                               permissions.userId,
                               permissions.userRole
                             )}
-                            onReject={() => {
-                              setInspectorRejectComment('');
-                              setInspectorRejectDialogOpen(true);
-                            }}
                             onSendBack={() => {
                               setInspectorSendBackComment('');
                               setInspectorSendBackDialogOpen(true);
@@ -3739,17 +3965,6 @@ export default function InspectionDetailPage() {
                             <RotateCcw className="mr-2 h-4 w-4" />
                             Send back
                           </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            onClick={() => {
-                              setInspectorRejectComment('');
-                              setInspectorRejectDialogOpen(true);
-                            }}
-                          >
-                            <XCircle className="mr-2 h-4 w-4" />
-                            Reject with comments
-                          </Button>
                         </div>
                       )}
                       <Part4Form
@@ -3881,6 +4096,8 @@ export default function InspectionDetailPage() {
                 const p5Submitted = ordqaPart5Submitted(inspection);
                 const p5Approved = ordqaPart5Approved(inspection);
 
+                const canHeadEditP5 = canUserOrdqaHeadEditPart5(inspection, permissions.userRole);
+
                 if (!needsP5) {
                   return (
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
@@ -3925,15 +4142,54 @@ export default function InspectionDetailPage() {
                 }
 
                 if (p5Approved) {
-                  return <Part5Display inspection={inspection} />;
+                  return (
+                    <div className="space-y-4">
+                      <Part5Display inspection={inspection} />
+                      {canHeadEditP5 && (
+                        <>
+                          <Separator className="my-2" />
+                          <div className="rounded-md border border-dashed border-violet-300 bg-violet-50/50 px-3 py-2 dark:border-violet-800 dark:bg-violet-950/30">
+                            <p className="text-sm font-medium text-foreground">Edit Part V (ORDAQA Head)</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Changes are saved on this IR and visible to the assigned ORDAQA Inspector.
+                            </p>
+                          </div>
+                          <Part5Form
+                            key={`part5-head-${inspection.id}-${inspection.updated_at || ''}`}
+                            inspection={inspection}
+                            inspectionId={inspection.id}
+                            onComplete={fetchInspection}
+                            submitLabel="Save Part V updates"
+                            headEdit
+                          />
+                        </>
+                      )}
+                    </div>
+                  );
                 }
 
                 if (p5Submitted) {
+                  const rejection = resolveInspectionRejection(inspection);
+                  const irRejected = String(inspection.status || '') === 'rejected';
                   return (
                     <div className="space-y-4">
-                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                        Part V saved — awaiting ORDAQA Head approval.
-                      </div>
+                      {irRejected && rejection ? (
+                        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-950 dark:border-red-800 dark:bg-red-950/30 dark:text-red-100">
+                          <p className="font-medium">{rejection.byLabel}</p>
+                          {rejection.reason ? (
+                            <p className="mt-1 whitespace-pre-wrap text-red-900/90 dark:text-red-200/90">
+                              {rejection.reason}
+                            </p>
+                          ) : null}
+                          <p className="mt-2 text-xs text-red-800/80 dark:text-red-300/90">
+                            Visible to all stakeholders on this inspection request.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                          Part V saved — awaiting ORDAQA Head approval.
+                        </div>
+                      )}
                       <Part5Display inspection={inspection} />
                       <div className="flex flex-wrap gap-2">
                         {canUserOrdqaHeadPart5SendBack(inspection, permissions.userRole) && (
@@ -3948,6 +4204,19 @@ export default function InspectionDetailPage() {
                             Send back to ORDAQA Inspector
                           </Button>
                         )}
+                        {canUserOrdqaHeadReject(inspection, permissions.userRole) && (
+                          <Button
+                            variant="outline"
+                            className="border-red-300 text-red-800 hover:bg-red-50 dark:border-red-800 dark:text-red-200 dark:hover:bg-red-950/40"
+                            onClick={() => {
+                              setPart5RejectReason('');
+                              setPart5RejectDialogOpen(true);
+                            }}
+                          >
+                            <XCircle className="mr-2 h-4 w-4" />
+                            Reject
+                          </Button>
+                        )}
                         {canUserApproveOrdqaPart5(inspection, permissions.userRole) && (
                           <Button onClick={() => handleWorkflowAction('approve_part5')}>
                             <CheckCircle className="mr-2 h-4 w-4" />
@@ -3955,6 +4224,26 @@ export default function InspectionDetailPage() {
                           </Button>
                         )}
                       </div>
+                      {canHeadEditP5 && (
+                        <>
+                          <Separator className="my-2" />
+                          <div className="rounded-md border border-dashed border-violet-300 bg-violet-50/50 px-3 py-2 dark:border-violet-800 dark:bg-violet-950/30">
+                            <p className="text-sm font-medium text-foreground">Edit Part V (ORDAQA Head)</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Update Sections 24–25, then Approve or Send back. The assigned ORDAQA Inspector
+                              will see these changes.
+                            </p>
+                          </div>
+                          <Part5Form
+                            key={`part5-head-${inspection.id}-${inspection.updated_at || ''}`}
+                            inspection={inspection}
+                            inspectionId={inspection.id}
+                            onComplete={fetchInspection}
+                            submitLabel="Save Part V updates"
+                            headEdit
+                          />
+                        </>
+                      )}
                     </div>
                   );
                 }
@@ -4198,22 +4487,36 @@ export default function InspectionDetailPage() {
 
         <TabsContent value="activity" className="space-y-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Activity Timeline</CardTitle>
-              <CardDescription>
-                Real-time inspection activity and updates
-              </CardDescription>
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle>Activity Timeline</CardTitle>
+                <CardDescription>
+                  Real-time inspection activity and updates
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 shrink-0"
+                disabled={!inspection.activities.length}
+                onClick={() => window.open(`/print/inspection/${inspection.id}/activity`, '_blank')}
+              >
+                <Printer className="h-4 w-4" />
+                Print PDF
+              </Button>
             </CardHeader>
             <CardContent>
               {inspection.activities.length > 0 ? (
                 <div className="space-y-4">
                   {inspection.activities.map((activity) => {
                     const isPart1EditActivity = activity.activity_type === 'part1_edited';
-                    // Hide detailed field diffs from non-initiators
                     const activityDescription =
                       isPart1EditActivity && !canSeePart1CertifierEdits
                         ? 'Part I was updated by Request Approver.'
-                        : activity.description;
+                        : formatInspectionActivityDescription(
+                            activity.activity_type,
+                            activity.description
+                          );
                     return (
                     <div key={activity.id} className="flex gap-3">
                       <div className="flex flex-col items-center">
@@ -4228,7 +4531,7 @@ export default function InspectionDetailPage() {
                             {activityDescription}
                           </p>
                           <Badge variant="secondary" className="text-xs shrink-0">
-                            {activity.activity_type}
+                            {formatInspectionActivityType(activity.activity_type)}
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground">
@@ -5290,9 +5593,13 @@ function Part2Step2Form({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const submitErrorRef = useRef<HTMLDivElement | null>(null);
   const d = parseJsonObj(inspection.part2_data);
+  const venueRequiresOutstation = part1VenueIsOutstation(
+    inspection.venue,
+    inspection.location
+  );
   const [agencyForm, setAgencyForm] = useState({
     third_party_agency: String(d.third_party_agency || ''),
-    outstation_inspection: !!d.outstation_inspection,
+    outstation_inspection: venueRequiresOutstation || !!d.outstation_inspection,
     team_head_comments: String(d.team_head_comments || ''),
   });
 
@@ -5325,9 +5632,13 @@ function Part2Step2Form({
     // Only hydrate from server when opening this IR — do not reset on poll/refresh
     // (otherwise Outstation Inspection toggles off before Save).
     const p2 = parseJsonObj(inspection.part2_data);
+    const venueRequiresOutstation = part1VenueIsOutstation(
+      inspection.venue,
+      inspection.location
+    );
     setAgencyForm({
       third_party_agency: String(p2.third_party_agency || ''),
-      outstation_inspection: !!p2.outstation_inspection,
+      outstation_inspection: venueRequiresOutstation || !!p2.outstation_inspection,
       team_head_comments: String(p2.team_head_comments || ''),
     });
     setFieldErrors({});
@@ -5388,7 +5699,9 @@ function Part2Step2Form({
           inspector_ids: selectedInspectors,
           part2_data: {
             third_party_agency: agencyForm.third_party_agency,
-            outstation_inspection: agencyForm.outstation_inspection,
+            outstation_inspection:
+              part1VenueIsOutstation(inspection.venue, inspection.location) ||
+              agencyForm.outstation_inspection,
             team_head_comments: agencyForm.team_head_comments.trim(),
           },
         }),
@@ -5450,8 +5763,15 @@ function Part2Step2Form({
       </div>
       <div className="flex items-center gap-3">
         <Switch
-          checked={agencyForm.outstation_inspection}
+          checked={venueRequiresOutstation || agencyForm.outstation_inspection}
+          disabled={venueRequiresOutstation}
+          title={
+            venueRequiresOutstation
+              ? 'Locked on because Part I venue is Outstation'
+              : 'Can be turned on or off for Within CABS / Within Bangalore'
+          }
           onCheckedChange={(v) => {
+            if (venueRequiresOutstation) return;
             setAgencyForm((prev) => ({
               ...prev,
               outstation_inspection: v,
@@ -5459,9 +5779,16 @@ function Part2Step2Form({
           }}
           className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
         />
-        <Label>Outstation Inspection</Label>
+        <div>
+          <Label>Outstation Inspection</Label>
+          {venueRequiresOutstation && (
+            <p className="text-xs text-muted-foreground">
+              On because Part I venue is Outstation.
+            </p>
+          )}
+        </div>
       </div>
-      {agencyForm.outstation_inspection && (
+      {(venueRequiresOutstation || agencyForm.outstation_inspection) && (
         <div className="rounded-md border border-blue-200 bg-blue-50/80 px-3 py-2 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
           <p className="font-medium">Outstation enabled</p>
           <p className="text-xs mt-0.5 text-blue-900/80 dark:text-blue-200/90">
@@ -5542,40 +5869,68 @@ function Part2Step2Form({
 }
 
 /** Assigned R&QA Inspector fills outstation Email Sent / Name & Sign / Date & Time after Team Head enables Outstation. */
+const outstationFormDraftByIr = new Map<
+  number,
+  { email_sent: string; email_sent_by: string; email_sent_date: string }
+>();
+
 function Part2InspectorOutstationForm({
   inspection,
   onComplete,
   onSuccess,
   showRejectSendBack = false,
-  onReject,
   onSendBack,
 }: {
   inspection: InspectionRequest;
   onComplete: () => Promise<void> | void;
   onSuccess?: (message: string) => void;
   showRejectSendBack?: boolean;
-  onReject?: () => void;
   onSendBack?: () => void;
 }) {
+  const { data: session } = useSession();
+  const loggedInName = session?.user?.name?.trim() || '';
   const d = parseJsonObj(inspection.part2_data);
-  const [form, setForm] = useState({
-    email_sent: d.email_sent === 'yes' || d.email_sent === 'no' ? String(d.email_sent) : '',
-    email_sent_by: String(d.email_sent_by || ''),
-    email_sent_date: String(d.email_sent_date || ''),
+  const [form, setForm] = useState(() => {
+    const draft = outstationFormDraftByIr.get(inspection.id);
+    if (draft) return draft;
+    return {
+      email_sent: d.email_sent === 'yes' || d.email_sent === 'no' ? String(d.email_sent) : '',
+      email_sent_by: String(d.email_sent_by || loggedInName),
+      email_sent_date: String(d.email_sent_date || ''),
+    };
   });
   const [loading, setLoading] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    outstationFormDraftByIr.set(inspection.id, form);
+  }, [inspection.id, form]);
+
+  useEffect(() => {
+    if (!loggedInName) return;
+    setForm((prev) => ({
+      ...prev,
+      email_sent_by: prev.email_sent_by.trim() ? prev.email_sent_by : loggedInName,
+    }));
+  }, [loggedInName]);
+
+  useEffect(() => {
+    // Keep local/draft values across poll-refresh and remount. Only fall back to
+    // server data when this IR has no in-progress draft.
+    const draft = outstationFormDraftByIr.get(inspection.id);
+    if (draft) {
+      setForm(draft);
+      return;
+    }
     const p2 = parseJsonObj(inspection.part2_data);
     setForm({
       email_sent: p2.email_sent === 'yes' || p2.email_sent === 'no' ? String(p2.email_sent) : '',
-      email_sent_by: String(p2.email_sent_by || ''),
+      email_sent_by: String(p2.email_sent_by || loggedInName),
       email_sent_date: String(p2.email_sent_date || ''),
     });
     setFieldErrors({});
-  }, [inspection.id, inspection.part2_data]);
+  }, [inspection.id]);
 
   const sel = 'w-full px-3 py-2 text-sm rounded-md border border-input bg-background';
   const errInput = 'border-destructive focus-visible:ring-destructive';
@@ -5585,7 +5940,7 @@ function Part2InspectorOutstationForm({
     if (!form.email_sent || !['yes', 'no'].includes(form.email_sent)) {
       errors.email_sent = 'Email Sent is required';
     }
-    if (!form.email_sent_by.trim()) {
+    if (!(form.email_sent_by.trim() || loggedInName)) {
       errors.email_sent_by = 'Name & Sign is required';
     }
     if (!form.email_sent_date.trim()) {
@@ -5607,13 +5962,14 @@ function Part2InspectorOutstationForm({
           action: 'save_part2_inspector_details',
           part2_data: {
             email_sent: form.email_sent,
-            email_sent_by: form.email_sent_by.trim(),
+            email_sent_by: form.email_sent_by.trim() || loggedInName,
             email_sent_date: form.email_sent_date,
           },
         }),
       });
       const data = await res.json();
       if (res.ok) {
+        outstationFormDraftByIr.delete(inspection.id);
         onSuccess?.(data.message || 'Outstation details saved');
         await onComplete();
         setSaveMsg(data.message || 'Outstation details saved');
@@ -5676,17 +6032,10 @@ function Part2InspectorOutstationForm({
             Name &amp; Sign <span className="text-destructive">*</span>
           </Label>
           <Input
-            value={form.email_sent_by}
-            onChange={(e) => {
-              setForm({ ...form, email_sent_by: e.target.value });
-              setFieldErrors((prev) => {
-                const next = { ...prev };
-                delete next.email_sent_by;
-                return next;
-              });
-            }}
-            className={fieldErrors.email_sent_by ? errInput : undefined}
-            placeholder="Inspector name / sign"
+            value={form.email_sent_by || loggedInName}
+            readOnly
+            className={`${fieldErrors.email_sent_by ? errInput : ''} bg-muted/50`}
+            placeholder={loggedInName || 'Logged-in inspector name'}
           />
           {fieldErrors.email_sent_by && (
             <p className="text-xs text-destructive">{fieldErrors.email_sent_by}</p>
@@ -5719,16 +6068,10 @@ function Part2InspectorOutstationForm({
           {loading ? 'Saving...' : 'Save Outstation Details'}
         </Button>
         {showRejectSendBack && (
-          <>
-            <Button type="button" variant="outline" disabled={loading} onClick={() => onSendBack?.()}>
-              <RotateCcw className="mr-2 h-4 w-4" />
-              Send back
-            </Button>
-            <Button type="button" variant="destructive" disabled={loading} onClick={() => onReject?.()}>
-              <XCircle className="mr-2 h-4 w-4" />
-              Reject with comments
-            </Button>
-          </>
+          <Button type="button" variant="outline" disabled={loading} onClick={() => onSendBack?.()}>
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Send back
+          </Button>
         )}
       </div>
     </div>
@@ -5756,6 +6099,19 @@ function Part5Display({ inspection }: { inspection: InspectionRequest }) {
   const signedBy = inspection.part3_completed_by_name;
   const signedDate = inspection.part3_date;
   const headApproved = ordqaPart5Approved(inspection);
+  const headEdit = getPart5HeadEditInfo(inspection);
+  const permissions = usePermissions();
+  const showHeadChanges = canSeePart5HeadChanges(inspection, permissions);
+  const changeMap = new Map(
+    showHeadChanges ? (headEdit?.changes || []).map((c) => [c.key, c]) : []
+  );
+  const remarkRowChanged = (i: number) => {
+    const prefix = `inspection_remarks.${i}`;
+    for (const k of changeMap.keys()) {
+      if (k === prefix || k.startsWith(`${prefix}.`)) return true;
+    }
+    return false;
+  };
   return (
     <div className="space-y-6">
       {headApproved && (
@@ -5770,6 +6126,31 @@ function Part5Display({ inspection }: { inspection: InspectionRequest }) {
               {' '}
               — {fmtDate(inspection.ordaqa_approval_date)}
             </span>
+          )}
+        </div>
+      )}
+      {headEdit && showHeadChanges && (
+        <div className="rounded-md border border-violet-300 bg-violet-50 px-3 py-2 text-sm text-violet-950 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-100">
+          <p className="font-medium">
+            Updated by ORDAQA Head: {headEdit.name}
+            {headEdit.at ? (
+              <span className="font-normal text-violet-800/80 dark:text-violet-300/90">
+                {' '}
+                · {fmtDate(headEdit.at)}
+              </span>
+            ) : null}
+          </p>
+          {headEdit.changes.length > 0 ? (
+            <>
+              <p className="mt-1 text-xs text-violet-800/90 dark:text-violet-300/90">
+                What changed:
+              </p>
+              <Part5ChangeList changes={headEdit.changes} />
+            </>
+          ) : (
+            <p className="mt-1 text-xs text-violet-800/90 dark:text-violet-300/90">
+              Review Sections 24–25 for the current values.
+            </p>
           )}
         </div>
       )}
@@ -5801,12 +6182,41 @@ function Part5Display({ inspection }: { inspection: InspectionRequest }) {
               }) as ObservationRemarkRow;
               const chatKey = remark.chat_id || '';
               const closed = chatKey ? threadStatus[chatKey]?.isClosed : false;
+              const obsChange = changeMap.get(`inspection_remarks.${i}.observation`);
+              const actChange = changeMap.get(`inspection_remarks.${i}.action_required`);
+              const closedChange = changeMap.get(`inspection_remarks.${i}.closed_on`);
+              const rowAdded = changeMap.get(`inspection_remarks.${i}`);
               return (
-              <tr key={i} className={closed ? 'opacity-50 bg-muted/30' : ''}>
-                <td className="px-4 py-2.5">{r.sl_no || i + 1}</td>
-                <td className="px-4 py-2.5 whitespace-pre-wrap">{r.observation || '—'}</td>
-                <td className="px-4 py-2.5 whitespace-pre-wrap">{r.action_required || '—'}</td>
-                <td className="px-4 py-2.5">{fmtDate(r.closed_on)}</td>
+              <tr
+                key={i}
+                className={
+                  closed
+                    ? 'opacity-50 bg-muted/30'
+                    : remarkRowChanged(i)
+                      ? 'bg-violet-50/70 dark:bg-violet-950/20'
+                      : ''
+                }
+              >
+                <td className="px-4 py-2.5">
+                  {r.sl_no || i + 1}
+                  {rowAdded && (
+                    <p className="mt-1 text-[11px] font-semibold text-violet-800 dark:text-violet-300">
+                      {rowAdded.to === '—' ? 'Removed by ORDAQA Head' : 'Added by ORDAQA Head'}
+                    </p>
+                  )}
+                </td>
+                <td className={`px-4 py-2.5 whitespace-pre-wrap ${part5ChangedClass(!!obsChange) || ''}`}>
+                  {r.observation || '—'}
+                  <Part5FromTo change={obsChange} compact />
+                </td>
+                <td className={`px-4 py-2.5 whitespace-pre-wrap ${part5ChangedClass(!!actChange) || ''}`}>
+                  {r.action_required || '—'}
+                  <Part5FromTo change={actChange} compact />
+                </td>
+                <td className={`px-4 py-2.5 ${part5ChangedClass(!!closedChange) || ''}`}>
+                  {fmtDate(r.closed_on)}
+                  <Part5FromTo change={closedChange} compact />
+                </td>
                 <td className="px-4 py-2.5">{r.signature || '—'}</td>
                 <td className="px-4 py-2.5">
                   <ObservationChatActions
@@ -5834,23 +6244,39 @@ function Part5Display({ inspection }: { inspection: InspectionRequest }) {
         <table className="w-full text-sm">
           <tbody className="divide-y">
             <tr><td className="bg-muted/50 px-4 py-2.5 font-medium" colSpan={2}><strong>25. Clearance Status</strong></td></tr>
-            <tr>
+            <tr className={part5ChangedClass(changeMap.has('clearance_status'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium w-[250px]">Status</td>
               <td className="px-4 py-2.5">
                 <Badge className={d.clearance_status === 'accepted' ? 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300' : d.clearance_status === 'rework' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300' : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'}>
                   {d.clearance_status === 'accepted' ? 'Accepted and Cleared' : d.clearance_status === 'rework' ? 'Rework' : 'Open'}
                 </Badge>
+                <Part5FromTo change={changeMap.get('clearance_status')} compact />
               </td>
             </tr>
             
-            <tr>
+            <tr className={part5ChangedClass(changeMap.has('dgaqa_inspector_name'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">ORDAQA Approved Inspector</td>
-              <td className="px-4 py-2.5">{d.dgaqa_inspector_name || '—'}</td>
+              <td className="px-4 py-2.5">
+                {d.dgaqa_inspector_name || '—'}
+                <Part5FromTo change={changeMap.get('dgaqa_inspector_name')} compact />
+              </td>
             </tr>
             {showOrdqaRepRow && (
-              <tr>
+              <tr className={part5ChangedClass(changeMap.has('dgaqa_rep'))}>
                 <td className="bg-muted/50 px-4 py-2.5 font-medium">ORDAQA Rep (in case of delegation to R&QA)</td>
-                <td className="px-4 py-2.5">{ordaqaRepReport || '—'}</td>
+                <td className="px-4 py-2.5">
+                  {ordaqaRepReport || '—'}
+                  <Part5FromTo change={changeMap.get('dgaqa_rep')} compact />
+                </td>
+              </tr>
+            )}
+            {changeMap.has('dgaqa_rep') && !showOrdqaRepRow && (
+              <tr className={part5ChangedClass(true)}>
+                <td className="bg-muted/50 px-4 py-2.5 font-medium">ORDAQA Rep (in case of delegation to R&QA)</td>
+                <td className="px-4 py-2.5">
+                  {String(d.dgaqa_rep || '—')}
+                  <Part5FromTo change={changeMap.get('dgaqa_rep')} compact />
+                </td>
               </tr>
             )}
             {ordaqaSectionsSig && (
@@ -6280,10 +6706,14 @@ function Part5Form({
   inspection,
   inspectionId,
   onComplete,
+  submitLabel,
+  headEdit = false,
 }: {
   inspection: InspectionRequest;
   inspectionId: number;
   onComplete: () => Promise<void> | void;
+  submitLabel?: string;
+  headEdit?: boolean;
 }) {
   const [form, setForm] = useState(() => {
     const p3 = parseJsonObj(inspection.part3_data);
@@ -6331,7 +6761,7 @@ function Part5Form({
   }, []);
 
   useEffect(() => {
-    if (!profileSigName) return;
+    if (!profileSigName || headEdit) return;
     setRemarks((prev) =>
       prev.map((r) => ({
         ...r,
@@ -6342,7 +6772,7 @@ function Part5Form({
       ...prev,
       dgaqa_inspector_name: prev.dgaqa_inspector_name.trim() ? prev.dgaqa_inspector_name : profileSigName,
     }));
-  }, [profileSigName]);
+  }, [profileSigName, headEdit]);
 
   const addRow = () =>
     setRemarks([
@@ -6398,7 +6828,10 @@ function Part5Form({
       {saveMsg && <div className="px-3 py-2 rounded-md bg-green-50 border border-green-200 text-green-800 text-sm dark:bg-green-900/30 dark:border-green-800 dark:text-green-300">{saveMsg}</div>}
       <Separator />
       <p className="text-sm text-muted-foreground">
-        <strong>Sections 24–25 (Part V)</strong> — complete below (assigned or delegated user from Part III Section 23). Part IV is already saved.
+        <strong>Sections 24–25 (Part V)</strong>
+        {headEdit
+          ? ' — ORDAQA Head can update the fields below. Changed fields are highlighted for the assigned ORDAQA Inspector (previous vs new value).'
+          : ' — complete below (assigned or delegated user from Part III Section 23).'}
       </p>
       <h4 className="font-semibold text-sm text-muted-foreground">24. Inspection Remarks (Mechanical / Electrical / Other)</h4>
       <div className="border rounded-lg overflow-x-auto">
@@ -6514,7 +6947,7 @@ function Part5Form({
       </p>
 
       <Button onClick={handleSubmit} disabled={loading} className="mt-2">
-        {loading ? 'Submitting...' : 'Submit Part V for ORDAQA Head Approval'}
+        {loading ? 'Saving...' : submitLabel || 'Submit Part V for ORDAQA Head Approval'}
       </Button>
     </div>
   );
@@ -6535,24 +6968,75 @@ function Part4Display({
   const assignedInspectors = resolveAssignedInspectorsForDisplay(inspection);
   const { statusMap: threadStatus, refresh: refreshThreadStatus } = useObservationThreadStatus(inspection.id, true);
   const YN = (v: string) => v === 'yes' ? 'Yes' : v === 'no' ? 'No' : v === 'na' ? 'N/A' : v || '—';
+  const permissions = usePermissions();
+  const thEdit = getPart4TeamHeadEditInfo(inspection);
+  const showThChanges = !!thEdit && canSeePart4TeamHeadChanges(inspection, permissions);
+  const changeMap = new Map(
+    showThChanges ? (thEdit?.changes || []).map((c) => [c.key, c]) : []
+  );
+  const remarkRowChanged = (i: number) => {
+    const prefix = `part4_remarks.${i}`;
+    for (const k of changeMap.keys()) {
+      if (k === prefix || k.startsWith(`${prefix}.`)) return true;
+    }
+    return false;
+  };
   return (
     <div className="space-y-6">
+      {thEdit && showThChanges && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-950 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-100">
+          <p className="font-medium">
+            Updated by Team Head – QA: {thEdit.name}
+            {thEdit.at ? (
+              <span className="font-normal text-sky-800/80 dark:text-sky-300/90">
+                {' '}
+                · {fmtDate(thEdit.at)}
+              </span>
+            ) : null}
+          </p>
+          {thEdit.changes.length > 0 ? (
+            <>
+              <p className="mt-1 text-xs text-sky-800/90 dark:text-sky-300/90">
+                What changed (inspector value → Team Head value):
+              </p>
+              <div className="mt-2 space-y-1">
+                {thEdit.changes.map((c) => (
+                  <Part4FromTo key={c.key} change={c} />
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="mt-1 text-xs text-sky-800/90 dark:text-sky-300/90">
+              Review Sections 26–29 for the current values.
+            </p>
+          )}
+        </div>
+      )}
       {/* Section 26 */}
       <div className="border rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <tbody className="divide-y">
             <tr><td className="bg-muted/50 px-4 py-2.5 font-medium" colSpan={2}><strong>26. Details of Inspection / Test Completed</strong></td></tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('inspection_details'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium w-[250px]">Details</td>
-              <td className="px-4 py-2.5 whitespace-pre-wrap">{d.inspection_details || '—'}</td>
+              <td className="px-4 py-2.5 whitespace-pre-wrap">
+                {d.inspection_details || '—'}
+                <Part4FromTo change={changeMap.get('inspection_details')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('start_date'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Inspection / Test Start Date</td>
-              <td className="px-4 py-2.5">{fmtDate(d.start_date)}</td>
+              <td className="px-4 py-2.5">
+                {fmtDate(d.start_date)}
+                <Part4FromTo change={changeMap.get('start_date')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('completion_date'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Inspection / Test Completion Date</td>
-              <td className="px-4 py-2.5">{fmtDate(d.completion_date)}</td>
+              <td className="px-4 py-2.5">
+                {fmtDate(d.completion_date)}
+                <Part4FromTo change={changeMap.get('completion_date')} compact />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -6563,21 +7047,33 @@ function Part4Display({
         <table className="w-full text-sm">
           <tbody className="divide-y">
             <tr><td className="bg-muted/50 px-4 py-2.5 font-medium" colSpan={2}><strong>27. Inspection Count</strong></td></tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('items_offered'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium w-[250px]">No. of Items Offered</td>
-              <td className="px-4 py-2.5">{d.items_offered || '—'}</td>
+              <td className="px-4 py-2.5">
+                {d.items_offered || '—'}
+                <Part4FromTo change={changeMap.get('items_offered')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('items_accepted'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Accepted</td>
-              <td className="px-4 py-2.5">{d.items_accepted || '—'}</td>
+              <td className="px-4 py-2.5">
+                {d.items_accepted || '—'}
+                <Part4FromTo change={changeMap.get('items_accepted')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('observations_count'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">No. of Observations</td>
-              <td className="px-4 py-2.5">{d.observations_count || '—'}</td>
+              <td className="px-4 py-2.5">
+                {d.observations_count || '—'}
+                <Part4FromTo change={changeMap.get('observations_count')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('items_rejected'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">Rejected</td>
-              <td className="px-4 py-2.5">{d.items_rejected || '—'}</td>
+              <td className="px-4 py-2.5">
+                {d.items_rejected || '—'}
+                <Part4FromTo change={changeMap.get('items_rejected')} compact />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -6588,15 +7084,21 @@ function Part4Display({
         <table className="w-full text-sm">
           <tbody className="divide-y">
             <tr><td className="bg-muted/50 px-4 py-2.5 font-medium" colSpan={2}><strong>28. Remarks / Observation by Inspector (R&QA Staff/Officer)</strong></td></tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('verification_logbook'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium w-[350px]">a. Verification of observations in log book from previous stages</td>
-              <td className="px-4 py-2.5">{YN(d.verification_logbook)}</td>
+              <td className="px-4 py-2.5">
+                {YN(d.verification_logbook)}
+                <Part4FromTo change={changeMap.get('verification_logbook')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('instruments_calibration'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">b. Instruments/Test Facilities Calibration details mentioned in log book</td>
-              <td className="px-4 py-2.5">{YN(d.instruments_calibration)}</td>
+              <td className="px-4 py-2.5">
+                {YN(d.instruments_calibration)}
+                <Part4FromTo change={changeMap.get('instruments_calibration')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('logbook_copy_attached') || changeMap.has('logbook_copy_file_name'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">c. Copy of log book entries attached</td>
               <td className="px-4 py-2.5">
                 <div className="flex flex-wrap items-center gap-2">
@@ -6624,19 +7126,30 @@ function Part4Display({
                     return null;
                   })()}
                 </div>
+                <Part4FromTo change={changeMap.get('logbook_copy_attached')} compact />
+                <Part4FromTo change={changeMap.get('logbook_copy_file_name')} compact />
               </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('inspection_status'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">d. Status of inspection carried out</td>
-              <td className="px-4 py-2.5 whitespace-pre-wrap">{d.inspection_status || '—'}</td>
+              <td className="px-4 py-2.5 whitespace-pre-wrap">
+                {d.inspection_status || '—'}
+                <Part4FromTo change={changeMap.get('inspection_status')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('per_guiding_checklist'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">e. Inspection carried out as per guiding checklist</td>
-              <td className="px-4 py-2.5">{YN(d.per_guiding_checklist)}</td>
+              <td className="px-4 py-2.5">
+                {YN(d.per_guiding_checklist)}
+                <Part4FromTo change={changeMap.get('per_guiding_checklist')} compact />
+              </td>
             </tr>
-            <tr>
+            <tr className={part4ChangedClass(changeMap.has('remarks'))}>
               <td className="bg-muted/50 px-4 py-2.5 font-medium">f. Remarks</td>
-              <td className="px-4 py-2.5 whitespace-pre-wrap">{d.remarks || '—'}</td>
+              <td className="px-4 py-2.5 whitespace-pre-wrap">
+                {d.remarks || '—'}
+                <Part4FromTo change={changeMap.get('remarks')} compact />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -6667,11 +7180,37 @@ function Part4Display({
                 }) as ObservationRemarkRow;
                 const chatKey = remark.chat_id || '';
                 const closed = chatKey ? threadStatus[chatKey]?.isClosed : false;
+                const obsChange = changeMap.get(`part4_remarks.${i}.observation`);
+                const actChange = changeMap.get(`part4_remarks.${i}.action_required`);
+                const rowAdded = changeMap.get(`part4_remarks.${i}`);
                 return (
-                <tr key={i} className={closed ? 'opacity-50 bg-muted/30' : ''}>
-                  <td className="px-4 py-2.5">{r.sl_no || i + 1}</td>
-                  <td className="px-4 py-2.5 whitespace-pre-wrap">{r.observation || '—'}</td>
-                  <td className="px-4 py-2.5 whitespace-pre-wrap">{r.action_required || '—'}</td>
+                <tr
+                  key={i}
+                  className={
+                    closed
+                      ? 'opacity-50 bg-muted/30'
+                      : remarkRowChanged(i)
+                        ? 'bg-sky-50/70 dark:bg-sky-950/20'
+                        : ''
+                  }
+                >
+                  <td className="px-4 py-2.5">
+                    {r.sl_no || i + 1}
+                    {rowAdded && (
+                      <p className="mt-1 text-[11px] font-semibold text-sky-800 dark:text-sky-300">
+                        {rowAdded.from === '—' ? 'Added' : 'Removed'}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-pre-wrap">
+                    {r.observation || '—'}
+                    <Part4FromTo change={obsChange} compact />
+                    {rowAdded && <Part4FromTo change={rowAdded} compact />}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-pre-wrap">
+                    {r.action_required || '—'}
+                    <Part4FromTo change={actChange} compact />
+                  </td>
                   <td className="px-4 py-2.5">
                     <ObservationChatActions
                       inspectionRequestId={inspection.id}
@@ -7148,7 +7687,7 @@ function Part4Form({
                     }`}
                   >
                     <Paperclip className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-muted-foreground">Attach log book copy (max 20MB) *</span>
+                    <span className="text-muted-foreground">Attach log book copy (max 300MB) *</span>
                     <input
                       type="file"
                       className="hidden"
@@ -7156,8 +7695,8 @@ function Part4Form({
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) {
-                          if (f.size > 20 * 1024 * 1024) {
-                            alert('File size exceeds 20MB limit');
+                          if (f.size > LOG_BOOK_MAX_BYTES) {
+                            alert('File size exceeds 300MB limit');
                             return;
                           }
                           setLogbookCopyPart4File(f);

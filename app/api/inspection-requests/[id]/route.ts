@@ -32,7 +32,7 @@ import {
   toPart1RequestDateYmd,
   validatePart1DocumentDetailsForward,
 } from '@/lib/inspection-display';
-import { ensurePart1SoInvolvementColumns, parsePart1Bool } from '@/lib/part1-so-fields-server';
+import { ensurePart1SoInvolvementColumns, ensureQuantityNumericColumn, parsePart1Bool } from '@/lib/part1-so-fields-server';
 import { PART1_APPROVER_EMPLOYEE_ID } from '@/lib/part1-approver';
 import { normalizeEmployeeId } from '@/lib/employee-id';
 
@@ -599,6 +599,7 @@ export async function PUT(
           : existingRequest.status;
 
       await ensurePart1SoInvolvementColumns();
+      await ensureQuantityNumericColumn();
       const soInvolvesDgaqa =
         bodySoInvolvesDgaqa !== undefined
           ? parsePart1Bool(bodySoInvolvesDgaqa)

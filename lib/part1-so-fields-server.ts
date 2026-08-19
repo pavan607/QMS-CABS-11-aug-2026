@@ -14,6 +14,24 @@ export async function ensurePart1SoInvolvementColumns(): Promise<void> {
   soInvolvementColumnsEnsured = true;
 }
 
+let quantityNumericEnsured = false;
+
+/** Field 11. Qty and field 10 Qty/set may be decimals (e.g. 2.5). */
+export async function ensureQuantityNumericColumn(): Promise<void> {
+  if (quantityNumericEnsured) return;
+  await query(
+    `ALTER TABLE inspection_requests
+     ALTER COLUMN quantity TYPE NUMERIC(14, 4)
+     USING quantity::numeric`
+  );
+  await query(
+    `ALTER TABLE inspection_requests
+     ALTER COLUMN quantity_per_set TYPE NUMERIC(14, 4)
+     USING quantity_per_set::numeric`
+  );
+  quantityNumericEnsured = true;
+}
+
 export {
   parsePart1Bool,
   isSupplyOrderAttachment,

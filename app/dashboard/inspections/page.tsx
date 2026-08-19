@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { canUserUpdatePart4, canUserUpdatePart5, canUserApprovePart4, canUserApproveOrdqaPart5, canUserFillPart2OutstationDetails, inspectionSkipsPart2Part3, memoReturnedAwaitingQaHead, ordaqaHeadPart3ActionRequired, ordaqaHeadReforwardActionRequired, resolveInspectionCustody, formatInspectionCustodyLine, formatCalendarDateDisplay, teamHeadQaNeedsInspectorAssignment, inspectionReadyForFinalTeamHeadApproval } from '@/lib/inspection-display';
+import { canUserUpdatePart4, canUserApprovePart4, canUserApproveOrdqaPart5, canUserFillPart2OutstationDetails, inspectionSkipsPart2Part3, memoReturnedAwaitingQaHead, ordaqaHeadPart3ActionRequired, ordaqaHeadReforwardActionRequired, resolveInspectionCustody, formatInspectionCustodyLine, formatCalendarDateDisplay, teamHeadQaNeedsInspectorAssignment, inspectionReadyForFinalTeamHeadApproval, userHasPart5ActionRequired, resolveInspectionRejection } from '@/lib/inspection-display';
 import { 
   Plus, Search, FileText,
   Calendar, MapPin, User, Paperclip, AlertCircle, Edit,
@@ -63,6 +63,7 @@ interface InspectionRequest {
   confirmations?: unknown;
   so_involves_rqa?: unknown;
   so_involves_dgaqa?: unknown;
+  rejection_reason?: string | null;
 }
 
 const ACTIONABLE_STATUSES: Record<string, string[]> = {
@@ -189,11 +190,11 @@ function InspectionsContent() {
       return (
         canUserFillPart2OutstationDetails(request, permissions.userId, role) ||
         canUserUpdatePart4(request, permissions.userId, role) ||
-        canUserUpdatePart5(request, permissions.userId, role)
+        userHasPart5ActionRequired(request, permissions.userId, role)
       );
     }
     if (role === 'ordaqa_inspector') {
-      return canUserUpdatePart5(request, permissions.userId, role);
+      return userHasPart5ActionRequired(request, permissions.userId, role);
     }
     if (role === 'ordaqa_head') {
       // Review mode: all Part III actions (new + re-forwarded)
@@ -255,7 +256,7 @@ function InspectionsContent() {
       case 'pending_part5':
         return (
           (permissions.userRole === 'ordaqa_inspector' || permissions.userRole === 'inspector') &&
-          canUserUpdatePart5(request, permissions.userId, permissions.userRole)
+          userHasPart5ActionRequired(request, permissions.userId, permissions.userRole)
         );
       case 'pending_part5_approval':
         return (
@@ -412,15 +413,7 @@ function InspectionsContent() {
         <div className="grid gap-4">
           {filteredRequests.map((request) => {
             const actionable =
-              shouldHighlight(request) ||
-              (permissions.userRole === 'inspector' &&
-                (canUserFillPart2OutstationDetails(
-                  request,
-                  permissions.userId,
-                  permissions.userRole
-                ) ||
-                  canUserUpdatePart4(request, permissions.userId, permissions.userRole) ||
-                  canUserUpdatePart5(request, permissions.userId, permissions.userRole)));
+              shouldHighlight(request) || isActionable(request);
             return (
             <Card key={request.id} className={`hover:shadow-md transition-shadow ${actionable ? 'border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/10' : ''}`}>
               <CardContent className="pt-6">
@@ -495,6 +488,21 @@ function InspectionsContent() {
                           );
                         })()}
                         
+                        {(() => {
+                          const rejection = resolveInspectionRejection(request);
+                          if (!rejection || String(request.status || '') !== 'rejected') return null;
+                          return (
+                            <div className="mb-3 rounded-md border border-red-200 bg-red-50/90 px-3 py-2 text-sm text-red-950 dark:border-red-800 dark:bg-red-950/30 dark:text-red-100">
+                              <p className="font-medium">{rejection.byLabel}</p>
+                              {rejection.reason ? (
+                                <p className="mt-1 whitespace-pre-wrap text-red-900/90 dark:text-red-200/90">
+                                  {rejection.reason}
+                                </p>
+                              ) : null}
+                            </div>
+                          );
+                        })()}
+
                         <p className="text-sm text-muted-foreground mb-3">
                           {request.description || 'No description provided'}
                         </p>

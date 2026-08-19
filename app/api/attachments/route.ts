@@ -2,9 +2,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { query } from '@/lib/db';
 import { writeFile, mkdir } from 'fs/promises';
+import { createWriteStream, existsSync } from 'fs';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import { ordqaPart5Submitted } from '@/lib/inspection-display';
+import {
+  ATTACHMENT_MAX_BYTES,
+  isLogBookAttachment,
+  isSupplyOrderAttachment,
+  LARGE_DOCUMENT_MAX_BYTES,
+} from '@/lib/part1-so-fields';
+
+export const maxDuration = 300;
+
+async function saveUploadedFile(file: File, filePath: string) {
+  if (typeof file.stream === 'function') {
+    const nodeStream = Readable.fromWeb(file.stream() as import('stream/web').ReadableStream);
+    await pipeline(nodeStream, createWriteStream(filePath));
+    return;
+  }
+  const bytes = await file.arrayBuffer();
+  await writeFile(filePath, Buffer.from(bytes));
+}
 
 // GET attachments (filter by entity)
 export async function GET(request: NextRequest) {
@@ -108,10 +128,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Validate file size (max 20MB)
-    const maxSize = 20 * 1024 * 1024; // 20MB
+    const isLargeDoc =
+      isSupplyOrderAttachment(description) || isLogBookAttachment(description);
+    const maxSize = isLargeDoc ? LARGE_DOCUMENT_MAX_BYTES : ATTACHMENT_MAX_BYTES;
     if (file.size > maxSize) {
-      return NextResponse.json({ error: 'File size exceeds 20MB limit' }, { status: 400 });
+      return NextResponse.json(
+        { error: isLargeDoc ? 'File size exceeds 300MB limit' : 'File size exceeds 20MB limit' },
+        { status: 400 }
+      );
     }
 
     // Create uploads directory if it doesn't exist
@@ -127,10 +151,7 @@ export async function POST(request: NextRequest) {
     const filePath = join(uploadsDir, fileName);
     const publicPath = `/uploads/${entityType}/${fileName}`;
 
-    // Save file
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    await writeFile(filePath, buffer);
+    await saveUploadedFile(file, filePath);
 
     // Save to database
     const result = await query(

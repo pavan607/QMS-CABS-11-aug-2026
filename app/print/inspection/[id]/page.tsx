@@ -21,7 +21,9 @@ import {
   inspectionSkipsPart2Part3,
   inspectionSkipsRqaPart2AndPart4,
   isForwardedToOrdqa,
+  resolveInspectionRejection,
 } from '@/lib/inspection-display';
+import { formatPart1Quantity } from '@/lib/part1-so-fields';
 
 import {
   resolveInspectorNames,
@@ -213,6 +215,18 @@ export default function PrintInspectionReport() {
         <PageHeader />
         <div className="form-title">REQUEST FOR R&amp;QA INSPECTION/TESTING</div>
         <div className="form-subtitle">(Electrical / Mechanical / System-level Test / others)</div>
+        {(() => {
+          const rejection = resolveInspectionRejection(ir);
+          if (!rejection || String(ir.status || '') !== 'rejected') return null;
+          return (
+            <div style={{ border: '1px solid #b91c1c', background: '#fef2f2', padding: '8px 10px', margin: '8px 0 12px' }}>
+              <div style={{ fontWeight: 'bold', color: '#991b1b' }}>{rejection.byLabel}</div>
+              {rejection.reason ? (
+                <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', color: '#7f1d1d' }}>{rejection.reason}</div>
+              ) : null}
+            </div>
+          );
+        })()}
         <div className="page-content">
         <div className="part-title">Part –I Details of item(s) to be inspected</div>
 
@@ -278,7 +292,7 @@ export default function PrintInspectionReport() {
               label="No. of sets — Qty/set"
               value={
                 ir.quantity != null && ir.quantity_per_set != null
-                  ? `${ir.quantity} — ${ir.quantity_per_set}`
+                  ? `${formatPart1Quantity(ir.quantity)} — ${formatPart1Quantity(ir.quantity_per_set)}`
                   : '—'
               }
             />
@@ -286,7 +300,9 @@ export default function PrintInspectionReport() {
               n="11"
               label="Qty"
               value={
-                ir.quantity != null && ir.quantity_per_set == null ? String(ir.quantity) : '—'
+                ir.quantity != null && ir.quantity_per_set == null
+                  ? formatPart1Quantity(ir.quantity)
+                  : '—'
               }
             />
             <Row n="12" label="Previous Stage Cleared" value={fmtPreviousStageCleared(ir.previous_stage_cleared)} />

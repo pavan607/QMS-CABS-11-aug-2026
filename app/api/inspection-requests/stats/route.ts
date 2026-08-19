@@ -12,7 +12,7 @@ import {
   resolvePart1ApproverUser,
 } from '@/lib/inspection-access';
 import { normalizeSystemRole } from '@/lib/user-roles';
-import { canUserUpdatePart4, canUserUpdatePart5, canUserFillPart2OutstationDetails } from '@/lib/inspection-display';
+import { canUserUpdatePart4, canUserFillPart2OutstationDetails, userHasPart5ActionRequired } from '@/lib/inspection-display';
 import { sqlPart1JointInspectionSkippedCondition } from '@/lib/inspection-scope-sql';
 
 export async function GET(request: NextRequest) {
@@ -236,7 +236,7 @@ export async function GET(request: NextRequest) {
         [userId]
       );
       const pendingPart5 = part5Candidates.rows.filter((ir) =>
-        canUserUpdatePart5(ir, userId, 'inspector')
+        userHasPart5ActionRequired(ir, userId, 'inspector')
       ).length;
       const outstationCandidates = await query(
         `SELECT status, part2_data, inspector_id, inspector_ids
@@ -273,11 +273,11 @@ export async function GET(request: NextRequest) {
                 so_involves_dgaqa, so_involves_rqa, ordaqa_inspector_id, ordaqa_approver_id
          FROM inspection_requests
          WHERE ordaqa_inspector_id = $1
-           AND status IN ('assigned', 'in_progress')`,
+           AND status IN ('assigned', 'in_progress', 'request_approved')`,
         [userId]
       );
       const pendingPart5 = part5Candidates.rows.filter((ir) =>
-        canUserUpdatePart5(ir, userId, 'ordaqa_inspector')
+        userHasPart5ActionRequired(ir, userId, 'ordaqa_inspector')
       ).length;
       actionItems = {
         my_assigned: parseInt(assignedRes.rows[0]?.count || 0),

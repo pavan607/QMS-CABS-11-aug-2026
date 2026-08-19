@@ -13,7 +13,7 @@ import {
   employeeIsPart1Approver,
   sqlPart1ApproverVisibleCondition,
 } from '@/lib/inspection-access';
-import { ensurePart1SoInvolvementColumns, parsePart1Bool } from '@/lib/part1-so-fields-server';
+import { ensurePart1SoInvolvementColumns, ensureQuantityNumericColumn, parsePart1Bool } from '@/lib/part1-so-fields-server';
 import { PART1_APPROVER_EMPLOYEE_ID } from '@/lib/part1-approver';
 import { normalizeEmployeeId } from '@/lib/employee-id';
 
@@ -431,6 +431,7 @@ export async function POST(request: NextRequest) {
     const insertStatus = saveAsDraft ? 'draft' : 'pending_request_approval';
 
     await ensurePart1SoInvolvementColumns();
+    await ensureQuantityNumericColumn();
     const soInvolvesDgaqa = parsePart1Bool(bodySoInvolvesDgaqa);
     const soInvolvesRqa = parsePart1Bool(bodySoInvolvesRqa);
 

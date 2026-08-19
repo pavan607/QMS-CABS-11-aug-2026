@@ -7,6 +7,12 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig: NextConfig = {
   output: "standalone",
   productionBrowserSourceMaps: false,
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "350mb",
+    },
+    middlewareClientMaxBodySize: "350mb",
+  },
   // Hide the Next.js "N" badge in the corner during `next dev`.
   devIndicators: false,
   // Runtime uploads under public/uploads are not reliably served as static files

@@ -31,11 +31,13 @@ export type NotificationType =
   | 'part4_pending_team_head_approval'
   | 'part4_team_head_rejected'
   | 'part4_team_head_approved'
+  | 'part4_team_head_edited'
   | 'part4_forwarded_for_part5'
   | 'part3_completed'
   | 'ordaqa_delegated_to_rqa'
   | 'part5_pending_ordaqa_approval'
   | 'part5_head_send_back'
+  | 'part5_head_edited'
   | 'part5_ordaqa_approved'
   | 'part5_approved_start_inspection';
 
@@ -915,6 +917,67 @@ export async function notifyOrdaqaAssigneePart5SentBack(
 }
 
 /**
+ * After ORDAQA Head edits Part V — notify assignee so they see the updated fields.
+ */
+export async function notifyOrdaqaAssigneePart5EditedByHead(
+  requestId: number,
+  requestNumber: string,
+  assigneeUserId: number | null | undefined,
+  headName: string,
+  excludeUserId?: number | null,
+  changes: Array<{ label: string; from: string; to: string }> = []
+): Promise<void> {
+  const who = (headName && String(headName).trim()) || 'ORDAQA Head';
+  const lines = changes
+    .map((c) => {
+      const label = String(c.label || '').trim();
+      if (!label) return '';
+      return `${label}: ${c.from} → ${c.to}`;
+    })
+    .filter(Boolean);
+  const fieldBit = lines.length ? ` What changed: ${lines.join('; ')}.` : '';
+  const message = `Inspection request ${requestNumber}: ${who} updated Part V (Sections 24–25).${fieldBit} Open Part V to review the changes.`;
+
+  if (assigneeUserId && assigneeUserId > 0 && assigneeUserId !== excludeUserId) {
+    await createNotification({
+      userId: assigneeUserId,
+      title: 'Part V updated by ORDAQA Head',
+      message,
+      type: 'part5_head_edited',
+      entityType: 'inspection_request',
+      entityId: requestId,
+      sendEmail: true,
+    });
+  }
+}
+
+/**
+ * After ORDAQA Head rejects the IR — notify every stakeholder involved in the inspection.
+ */
+export async function notifyStakeholdersOrdqaHeadRejected(
+  requestId: number,
+  requestNumber: string,
+  headName: string,
+  reason: string,
+  excludeUserId?: number | null,
+  extraUserIds: unknown[] = []
+): Promise<void> {
+  const who = (headName && String(headName).trim()) || 'ORDAQA Head';
+  const comment = String(reason || '').trim();
+  await notifyIrStakeholders(
+    requestId,
+    {
+      title: 'Inspection Rejected by ORDAQA Head',
+      message: comment
+        ? `Inspection request ${requestNumber} was rejected by ${who}. Comment: ${comment}`
+        : `Inspection request ${requestNumber} was rejected by ${who}.`,
+      type: 'request_rejected',
+    },
+    { excludeUserId, extraUserIds }
+  );
+}
+
+/**
  * After ORDAQA Head approves Part V — notify all IR stakeholders.
  */
 export async function notifyOrdaqaAssigneePart5Approved(
@@ -1235,6 +1298,37 @@ export async function notifyInspectorsReassignedPart2(
  * ORDAQA assignees/approvers, Forward Request user, activity actors, observation
  * chat participants, plus active QA / ORDAQA Heads).
  */
+function parseJsonRecordForNotify(val: unknown): Record<string, unknown> {
+  if (!val) return {};
+  if (typeof val === 'object' && !Array.isArray(val)) return val as Record<string, unknown>;
+  if (typeof val === 'string' && val.trim()) {
+    try {
+      const o = JSON.parse(val);
+      if (o && typeof o === 'object' && !Array.isArray(o)) return o as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function addPart3InvolvedUserIds(add: (uid: unknown) => void, part3: unknown): void {
+  const p = parseJsonRecordForNotify(part3);
+  add(p.part5_head_edited_by);
+  add(p.part5_head_send_back_by);
+  add(p.part5_head_rejected_by);
+  for (const histKey of ['part5_return_history', 'return_history'] as const) {
+    const hist = p[histKey];
+    if (Array.isArray(hist)) {
+      for (const entry of hist) {
+        if (entry && typeof entry === 'object') {
+          add((entry as Record<string, unknown>).by_user_id);
+        }
+      }
+    }
+  }
+}
+
 function addPart2InvolvedUserIds(add: (uid: unknown) => void, part2: unknown): void {
   let p: Record<string, unknown> = {};
   if (part2 && typeof part2 === 'object' && !Array.isArray(part2)) {
@@ -1277,8 +1371,8 @@ export async function collectIrStakeholderIds(
     `SELECT initiator_id, request_approver_id, nominated_request_approver_id,
             nominated_team_head_id, qa_approver_id, part1_approved_by,
             inspector_id, inspector_ids, ordaqa_inspector_id, ordaqa_approver_id,
-            final_qa_approver_id, approver_id, part2_data, part3_completed_by,
-            part4_completed_by
+            final_qa_approver_id, approver_id, part2_data, part3_data,
+            part3_completed_by, part4_completed_by
      FROM inspection_requests WHERE id = $1`,
     [requestId]
   );
@@ -1310,6 +1404,7 @@ export async function collectIrStakeholderIds(
       /* ignore */
     }
     addPart2InvolvedUserIds(add, row.part2_data);
+    addPart3InvolvedUserIds(add, row.part3_data);
   }
 
   // Forward Request (Part I Approver) by known employee id — always include 1021
@@ -1505,6 +1600,40 @@ export async function notifyTeamHeadPart4PendingApproval(
     title: 'Part IV pending your approval',
     message: `Inspection request ${requestNumber}: Part IV (R&QA Inspection Report) was submitted and awaits your Approve or Reject (with comments).`,
     type: 'part4_pending_team_head_approval',
+    entityType: 'inspection_request',
+    entityId: requestId,
+    sendEmail: true,
+  });
+}
+
+/**
+ * After Team Head – QA edits Part IV — notify assigned R&QA inspectors so they see from → to.
+ */
+export async function notifyInspectorsPart4EditedByTeamHead(
+  requestId: number,
+  requestNumber: string,
+  inspectorUserIds: unknown[],
+  teamHeadName: string,
+  excludeUserId?: number | null,
+  changes: Array<{ label: string; from: string; to: string }> = []
+): Promise<void> {
+  const ids = normalizePositiveIds(inspectorUserIds).filter(
+    (id) => excludeUserId == null || id !== Number(excludeUserId)
+  );
+  if (ids.length === 0) return;
+  const who = (teamHeadName && String(teamHeadName).trim()) || 'Team Head – QA';
+  const lines = changes
+    .map((c) => {
+      const label = String(c.label || '').trim();
+      if (!label) return '';
+      return `${label}: ${c.from} → ${c.to}`;
+    })
+    .filter(Boolean);
+  const fieldBit = lines.length ? ` What changed: ${lines.join('; ')}.` : '';
+  await createBulkNotifications(ids, {
+    title: 'Part IV updated by Team Head – QA',
+    message: `Inspection request ${requestNumber}: ${who} updated Part IV (R&QA Inspection Report).${fieldBit} Open Part IV to review the changes.`,
+    type: 'part4_team_head_edited',
     entityType: 'inspection_request',
     entityId: requestId,
     sendEmail: true,

@@ -95,19 +95,47 @@ export function parsePart1Venue(stored: string): { category: string; detail: str
   const raw = String(stored || '').trim();
   if (!raw) return { category: '', detail: '' };
 
+  const rawLower = raw.toLowerCase();
   for (const option of PART1_VENUE_OPTIONS) {
-    if (raw === option) return { category: option, detail: '' };
+    const optionLower = option.toLowerCase();
+    if (rawLower === optionLower) return { category: option, detail: '' };
     const prefix = `${option}${PART1_VENUE_SEPARATOR}`;
     if (raw.startsWith(prefix)) {
+      return { category: option, detail: raw.slice(prefix.length).trim() };
+    }
+    const prefixLower = `${optionLower}${PART1_VENUE_SEPARATOR.toLowerCase()}`;
+    if (rawLower.startsWith(prefixLower)) {
       return { category: option, detail: raw.slice(prefix.length).trim() };
     }
     const altPrefix = `${option} - `;
     if (raw.startsWith(altPrefix)) {
       return { category: option, detail: raw.slice(altPrefix.length).trim() };
     }
+    const altPrefixLower = `${optionLower} - `;
+    if (rawLower.startsWith(altPrefixLower)) {
+      return { category: option, detail: raw.slice(altPrefix.length).trim() };
+    }
   }
 
   return { category: '', detail: raw };
+}
+
+/** Part I venue category, preferring `venue` over `location`. */
+export function part1VenueCategory(venue: unknown, locationFallback?: unknown): Part1VenueOption | '' {
+  const fromVenue = parsePart1Venue(String(venue ?? '').trim()).category;
+  if (fromVenue === 'Within CABS' || fromVenue === 'Within Bangalore' || fromVenue === 'Outstation') {
+    return fromVenue;
+  }
+  const fromLocation = parsePart1Venue(String(locationFallback ?? '').trim()).category;
+  if (fromLocation === 'Within CABS' || fromLocation === 'Within Bangalore' || fromLocation === 'Outstation') {
+    return fromLocation;
+  }
+  return '';
+}
+
+/** True only when Part I venue category is Outstation — not Within CABS / Within Bangalore. */
+export function part1VenueIsOutstation(venue: unknown, locationFallback?: unknown): boolean {
+  return part1VenueCategory(venue, locationFallback) === 'Outstation';
 }
 
 /** Part I field 5 — Source options. */
@@ -824,6 +852,52 @@ export function formatReceivedDateTimeDisplay(val: unknown, empty = '—'): stri
 }
 
 /**
+ * Activity timeline type labels.
+ * Request Approver is the Part I approver; employee 1021 only forwards to QA Head.
+ */
+export function formatInspectionActivityType(activityType: unknown): string {
+  const type = String(activityType || '').trim();
+  if (type === 'request_forwarded') return 'request approved';
+  if (type === 'part1_approved') return 'request forwarded';
+  return type.replace(/_/g, ' ') || '—';
+}
+
+/** Activity timeline description — maps stored wording to Request Approver vs 1021 roles. */
+export function formatInspectionActivityDescription(
+  activityType: unknown,
+  description: unknown
+): string {
+  const type = String(activityType || '').trim();
+  const desc = String(description || '').trim();
+
+  if (desc.startsWith('Request forwarded by Request Approver for Part I approval')) {
+    return desc.replace(
+      /^Request forwarded by Request Approver for Part I approval/,
+      'Request Approved by Request Approver for Part I approval'
+    );
+  }
+  if (type === 'request_forwarded' && !desc) {
+    return 'Request Approved by Request Approver for Part I approval';
+  }
+
+  const forwardedByGd4 = desc.match(
+    /^(?:Part I approved by employee \S+|Request forwarded to QA Head by employee \S+)(?::\s*(.*))?$/s
+  );
+  if (forwardedByGd4 || (type === 'part1_approved' && /by employee \d+/i.test(desc))) {
+    const comment = (forwardedByGd4?.[1] || '').trim();
+    if (comment) return `Request forwarded to QA Head by GD-4: ${comment}`;
+    if (/^Part I approved by employee/i.test(desc) || /^Request forwarded to QA Head by employee/i.test(desc)) {
+      return desc
+        .replace(/^Part I approved by employee \S+/i, 'Request forwarded to QA Head by GD-4')
+        .replace(/^Request forwarded to QA Head by employee \S+/i, 'Request forwarded to QA Head by GD-4');
+    }
+    return 'Request forwarded to QA Head by GD-4';
+  }
+
+  return desc || '—';
+}
+
+/**
  * Part III / Part V reports: "(In case of delegation to R&QA) ORDAQA Rep".
  * When ORDAQA Head chose Delegated, print the fixed label (not the person name).
  * Prefer explicit `dgaqa_rep` from Sections 24–25 only when not a delegation case.
@@ -1387,8 +1461,8 @@ export function canUserFillPart2OutstationDetails(
 }
 
 /**
- * Assigned R&QA inspector may Reject (close IR) or Send back to Team Head – QA
- * while status is assigned / in progress, until Part IV is submitted for Team Head approval.
+ * Assigned R&QA inspector may Send back to Team Head – QA only while outstation
+ * Email Sent / Name & Sign / Date & Time have not been submitted yet.
  */
 export function canUserInspectorOutstationRejectOrSendBack(
   ir: {
@@ -1410,6 +1484,7 @@ export function canUserInspectorOutstationRejectOrSendBack(
   userRole?: string
 ): boolean {
   if (!isOutstationInspectionEnabled(ir)) return false;
+  if (part2OutstationDetailsSubmitted(ir)) return false;
   if (!['assigned', 'in_progress'].includes(String(ir.status || ''))) return false;
 
   const assigned = isUserAssignedPart2Inspector(ir, userId);
@@ -1561,6 +1636,199 @@ export function canUserTeamHeadEditPart4(
   return canUserApprovePart4(ir, userId, userRole);
 }
 
+export type Part4FieldChange = {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+};
+
+const PART4_YN_KEYS = new Set([
+  'verification_logbook',
+  'instruments_calibration',
+  'logbook_copy_attached',
+  'per_guiding_checklist',
+]);
+
+function displayPart4Scalar(key: string, value: unknown): string {
+  if (PART4_YN_KEYS.has(key)) {
+    const s = String(value ?? '').trim().toLowerCase();
+    if (s === 'yes') return 'Yes';
+    if (s === 'no') return 'No';
+    if (s === 'na') return 'N/A';
+    return s ? String(value) : '—';
+  }
+  if (key === 'start_date' || key === 'completion_date') {
+    const s = value == null ? '' : String(value).trim();
+    if (!s) return '—';
+    return s.slice(0, 10);
+  }
+  const s = value == null ? '' : String(value).trim();
+  return s || '—';
+}
+
+function normalizePart4Remarks(raw: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((r, i) => {
+    const row = r && typeof r === 'object' ? (r as Record<string, unknown>) : {};
+    return {
+      sl_no: String(row.sl_no ?? i + 1).trim(),
+      observation: String(row.observation ?? '').trim(),
+      action_required: String(row.action_required ?? '').trim(),
+    };
+  });
+}
+
+/** Part IV fields the inspector submitted (excludes Team Head metadata). */
+export function snapshotPart4EditableFields(src: Record<string, unknown>): Record<string, unknown> {
+  return {
+    inspection_details: src.inspection_details ?? null,
+    start_date: src.start_date ?? null,
+    completion_date: src.completion_date ?? null,
+    items_offered: src.items_offered ?? null,
+    items_accepted: src.items_accepted ?? null,
+    observations_count: src.observations_count ?? null,
+    items_rejected: src.items_rejected ?? null,
+    verification_logbook: src.verification_logbook ?? null,
+    instruments_calibration: src.instruments_calibration ?? null,
+    logbook_copy_attached: src.logbook_copy_attached ?? null,
+    logbook_copy_file_name: src.logbook_copy_file_name ?? null,
+    inspection_status: src.inspection_status ?? null,
+    per_guiding_checklist: src.per_guiding_checklist ?? null,
+    remarks: src.remarks ?? null,
+    inspector_rep2_name: src.inspector_rep2_name ?? null,
+    part4_remarks: Array.isArray(src.part4_remarks) ? src.part4_remarks : [],
+  };
+}
+
+/** Diff inspector-submitted Part IV vs current (after Team Head – QA edit). */
+export function diffPart4TeamHeadEdits(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>
+): Part4FieldChange[] {
+  const changes: Part4FieldChange[] = [];
+  const scalarKeys: Array<{ key: string; label: string }> = [
+    { key: 'inspection_details', label: '26. Details of Inspection / Test' },
+    { key: 'start_date', label: '26. Inspection / Test Start Date' },
+    { key: 'completion_date', label: '26. Inspection / Test Completion Date' },
+    { key: 'items_offered', label: '27. No. of Items Offered' },
+    { key: 'items_accepted', label: '27. Accepted' },
+    { key: 'observations_count', label: '27. No. of Observations' },
+    { key: 'items_rejected', label: '27. Rejected' },
+    { key: 'verification_logbook', label: '28.a Verification of observations in log book' },
+    { key: 'instruments_calibration', label: '28.b Instruments/Test Facilities Calibration' },
+    { key: 'logbook_copy_attached', label: '28.c Copy of log book entries attached' },
+    { key: 'logbook_copy_file_name', label: '28.c Log book attachment' },
+    { key: 'inspection_status', label: '28.d Status of inspection carried out' },
+    { key: 'per_guiding_checklist', label: '28.e Inspection as per guiding checklist' },
+    { key: 'remarks', label: '28.f Remarks' },
+    { key: 'inspector_rep2_name', label: '30. Inspector / QA Rep 2' },
+  ];
+  for (const f of scalarKeys) {
+    const from = displayPart4Scalar(f.key, before[f.key]);
+    const to = displayPart4Scalar(f.key, after[f.key]);
+    if (from !== to) changes.push({ key: f.key, label: f.label, from, to });
+  }
+
+  const beforeRows = normalizePart4Remarks(before.part4_remarks);
+  const afterRows = normalizePart4Remarks(after.part4_remarks);
+  const max = Math.max(beforeRows.length, afterRows.length);
+  const remarkFields: Array<{ key: string; label: string }> = [
+    { key: 'observation', label: 'Observation' },
+    { key: 'action_required', label: 'Action Required' },
+  ];
+  for (let i = 0; i < max; i++) {
+    const b = beforeRows[i];
+    const a = afterRows[i];
+    const sl = a?.sl_no || b?.sl_no || String(i + 1);
+    if (!b && a) {
+      const summary = [a.observation, a.action_required].filter(Boolean).join(' / ') || '(new row)';
+      changes.push({
+        key: `part4_remarks.${i}`,
+        label: `29. Remark ${sl} (added)`,
+        from: '—',
+        to: summary,
+      });
+      continue;
+    }
+    if (b && !a) {
+      const summary = [b.observation, b.action_required].filter(Boolean).join(' / ') || '(removed)';
+      changes.push({
+        key: `part4_remarks.${i}`,
+        label: `29. Remark ${sl} (removed)`,
+        from: summary,
+        to: '—',
+      });
+      continue;
+    }
+    if (!b || !a) continue;
+    for (const f of remarkFields) {
+      const from = displayPart4Scalar(f.key, b[f.key]);
+      const to = displayPart4Scalar(f.key, a[f.key]);
+      if (from !== to) {
+        changes.push({
+          key: `part4_remarks.${i}.${f.key}`,
+          label: `29. Remark ${sl} — ${f.label}`,
+          from,
+          to,
+        });
+      }
+    }
+  }
+  return changes;
+}
+
+function parseStoredPart4Changes(raw: unknown): Part4FieldChange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Part4FieldChange[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const key = String(o.key || '').trim();
+    const label = String(o.label || '').trim();
+    if (!key || !label) continue;
+    out.push({
+      key,
+      label,
+      from: String(o.from ?? '—'),
+      to: String(o.to ?? '—'),
+    });
+  }
+  return out;
+}
+
+export function getPart4TeamHeadEditInfo(ir: { part4_data?: unknown }): {
+  name: string;
+  at: string | null;
+  changes: Part4FieldChange[];
+} | null {
+  const p4 = parseJsonRecord(ir.part4_data);
+  const name = String(p4.part4_team_head_edited_by_name || '').trim();
+  let changes = parseStoredPart4Changes(p4.part4_team_head_edit_changes);
+  const snapshot = p4.part4_inspector_submitted;
+  if (
+    changes.length === 0 &&
+    snapshot &&
+    typeof snapshot === 'object' &&
+    !Array.isArray(snapshot)
+  ) {
+    changes = diffPart4TeamHeadEdits(
+      snapshot as Record<string, unknown>,
+      snapshotPart4EditableFields(p4)
+    );
+  }
+  const atRaw = p4.part4_team_head_edited_at;
+  if (!name && changes.length === 0) {
+    const editedBy = p4.part4_team_head_edited_by;
+    const hasEditMarker =
+      (editedBy != null && Number(editedBy) > 0) ||
+      (atRaw != null && String(atRaw).trim() !== '');
+    if (!hasEditMarker) return null;
+  }
+  const at = atRaw != null && String(atRaw).trim() ? String(atRaw).trim() : null;
+  return { name: name || 'Team Head – QA', at, changes };
+}
+
 /** Part IV (R&QA report) — editable while assigned (before Start); locked while pending/approved by Team Head; locked after Part V when ORDAQA path applies. */
 export function canUserUpdatePart4(
   ir: {
@@ -1705,12 +1973,14 @@ export function ordqaPart5Completed(ir: {
 /** ORDAQA Head (or admin) may approve Part V after assignee submission. */
 export function canUserApproveOrdqaPart5(
   ir: {
+    status?: string | null;
     forwarded_to_ordaqa?: unknown;
     part3_data?: unknown;
     ordaqa_approver_id?: number | null;
   },
   userRole?: string
 ): boolean {
+  if (['completed', 'closed', 'rejected'].includes(String(ir.status || ''))) return false;
   if (!inspectionRequiresOrdqaPart5(ir)) return false;
   if (ordqaPart5Approved(ir)) return false;
   if (!ordqaPart5Submitted(ir)) return false;
@@ -1731,12 +2001,245 @@ export function getPart5HeadSendBackComment(ir: { part3_data?: unknown }): strin
   return String(c).trim();
 }
 
+/** Who rejected the IR and the comment — visible to every stakeholder. */
+export function resolveInspectionRejection(ir: {
+  status?: string | null;
+  rejection_reason?: string | null;
+  part2_data?: unknown;
+  part3_data?: unknown;
+}): { reason: string; byLabel: string } | null {
+  const p2 = parseJsonRecord(ir.part2_data);
+  const p3 = parseJsonRecord(ir.part3_data);
+  const p5 = String(p3.part5_head_reject_comment ?? '').trim();
+  const inspector = String(p2.inspector_reject_comment ?? '').trim();
+  const teamHead = String(p2.team_head_reject_comment ?? '').trim();
+  const column = String(ir.rejection_reason ?? '').trim();
+
+  let byLabel = 'Rejected';
+  let reason = column;
+  if (p5) {
+    byLabel = 'Rejected by ORDAQA Head';
+    reason = p5;
+  } else if (inspector) {
+    byLabel = 'Rejected by R&QA Inspector';
+    reason = inspector;
+  } else if (teamHead) {
+    byLabel = 'Rejected by Team Head – QA';
+    reason = teamHead;
+  }
+
+  if (String(ir.status || '') !== 'rejected' && !reason) return null;
+  if (!reason && String(ir.status || '') === 'rejected') {
+    return { reason: '', byLabel: 'Inspection request was rejected' };
+  }
+  if (!reason) return null;
+  return { reason, byLabel };
+}
+
 /** ORDAQA Head (or admin) may send Part V back to the assignee after submission, before approval. */
 export function canUserOrdqaHeadPart5SendBack(
   ir: Parameters<typeof canUserApproveOrdqaPart5>[0],
   userRole?: string
 ): boolean {
   return canUserApproveOrdqaPart5(ir, userRole);
+}
+
+/** ORDAQA Head (or admin) may reject the IR after Part V is submitted, before approval. */
+export function canUserOrdqaHeadReject(
+  ir: Parameters<typeof canUserApproveOrdqaPart5>[0],
+  userRole?: string
+): boolean {
+  return canUserApproveOrdqaPart5(ir, userRole);
+}
+
+/**
+ * ORDAQA Head (or admin) may edit Part V after the assignee submits,
+ * until the IR is completed / closed. Inspector sees the updated fields.
+ */
+export function canUserOrdqaHeadEditPart5(
+  ir: {
+    status?: string;
+    forwarded_to_ordaqa?: unknown;
+    part3_data?: unknown;
+    ordaqa_approver_id?: number | null;
+  },
+  userRole?: string
+): boolean {
+  if (!inspectionRequiresOrdqaPart5(ir)) return false;
+  if (!ordqaPart5Submitted(ir)) return false;
+  if (userRole !== 'ordaqa_head' && userRole !== 'administrator') return false;
+  if (['completed', 'closed', 'rejected'].includes(String(ir.status || ''))) return false;
+  return true;
+}
+
+export type Part5FieldChange = {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+};
+
+function displayPart5Scalar(key: string, value: unknown): string {
+  if (key === 'clearance_status') {
+    const s = String(value ?? '').trim().toLowerCase();
+    if (s === 'accepted') return 'Accepted and Cleared';
+    if (s === 'rework') return 'Rework';
+    if (s === 'open') return 'Open';
+    return s ? String(value) : '—';
+  }
+  if (key === 'closed_on') {
+    const s = value == null ? '' : String(value).trim();
+    if (!s) return '—';
+    return s.slice(0, 10);
+  }
+  const s = value == null ? '' : String(value).trim();
+  return s || '—';
+}
+
+function normalizePart5Remarks(raw: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((r, i) => {
+    const row = r && typeof r === 'object' ? (r as Record<string, unknown>) : {};
+    return {
+      sl_no: String(row.sl_no ?? i + 1).trim(),
+      observation: String(row.observation ?? '').trim(),
+      action_required: String(row.action_required ?? '').trim(),
+      closed_on: String(row.closed_on ?? '').trim().slice(0, 10),
+      signature: String(row.signature ?? '').trim(),
+    };
+  });
+}
+
+/** Part V fields the inspector submitted (excludes Head metadata). */
+export function snapshotPart5EditableFields(src: Record<string, unknown>): Record<string, unknown> {
+  return {
+    clearance_status: src.clearance_status ?? null,
+    dgaqa_inspector_name: src.dgaqa_inspector_name ?? null,
+    dgaqa_rep: src.dgaqa_rep ?? null,
+    inspection_remarks: Array.isArray(src.inspection_remarks) ? src.inspection_remarks : [],
+  };
+}
+
+/** Diff inspector-submitted Part V vs current (after ORDAQA Head edit). */
+export function diffPart5HeadEdits(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>
+): Part5FieldChange[] {
+  const changes: Part5FieldChange[] = [];
+  const scalarKeys: Array<{ key: string; label: string }> = [
+    { key: 'clearance_status', label: '25. Clearance Status' },
+    { key: 'dgaqa_inspector_name', label: '25. ORDAQA Approved Inspector' },
+    { key: 'dgaqa_rep', label: '25. ORDAQA Rep' },
+  ];
+  for (const f of scalarKeys) {
+    const from = displayPart5Scalar(f.key, before[f.key]);
+    const to = displayPart5Scalar(f.key, after[f.key]);
+    if (from !== to) changes.push({ key: f.key, label: f.label, from, to });
+  }
+
+  const beforeRows = normalizePart5Remarks(before.inspection_remarks);
+  const afterRows = normalizePart5Remarks(after.inspection_remarks);
+  const max = Math.max(beforeRows.length, afterRows.length);
+  const remarkFields: Array<{ key: string; label: string }> = [
+    { key: 'observation', label: 'Observation' },
+    { key: 'action_required', label: 'Action Required' },
+    { key: 'closed_on', label: 'Closed On' },
+  ];
+  for (let i = 0; i < max; i++) {
+    const b = beforeRows[i];
+    const a = afterRows[i];
+    const sl = a?.sl_no || b?.sl_no || String(i + 1);
+    if (!b && a) {
+      const summary = [a.observation, a.action_required].filter(Boolean).join(' / ') || '(new row)';
+      changes.push({
+        key: `inspection_remarks.${i}`,
+        label: `24. Remark ${sl} (added)`,
+        from: '—',
+        to: summary,
+      });
+      continue;
+    }
+    if (b && !a) {
+      const summary = [b.observation, b.action_required].filter(Boolean).join(' / ') || '(removed)';
+      changes.push({
+        key: `inspection_remarks.${i}`,
+        label: `24. Remark ${sl} (removed)`,
+        from: summary,
+        to: '—',
+      });
+      continue;
+    }
+    if (!b || !a) continue;
+    for (const f of remarkFields) {
+      const from = displayPart5Scalar(f.key, b[f.key]);
+      const to = displayPart5Scalar(f.key, a[f.key]);
+      if (from !== to) {
+        changes.push({
+          key: `inspection_remarks.${i}.${f.key}`,
+          label: `24. Remark ${sl} — ${f.label}`,
+          from,
+          to,
+        });
+      }
+    }
+  }
+  return changes;
+}
+
+function parseStoredPart5Changes(raw: unknown): Part5FieldChange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Part5FieldChange[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const key = String(o.key || '').trim();
+    const label = String(o.label || '').trim();
+    if (!key || !label) continue;
+    out.push({
+      key,
+      label,
+      from: String(o.from ?? '—'),
+      to: String(o.to ?? '—'),
+    });
+  }
+  return out;
+}
+
+export function getPart5HeadEditInfo(ir: { part3_data?: unknown }): {
+  name: string;
+  at: string | null;
+  changes: Part5FieldChange[];
+} | null {
+  const p3 = parseJsonRecord(ir.part3_data);
+  const name = String(p3.part5_head_edited_by_name || '').trim();
+  let changes = parseStoredPart5Changes(p3.part5_head_edit_changes);
+  const snapshot = p3.part5_inspector_submitted;
+  if (
+    changes.length === 0 &&
+    snapshot &&
+    typeof snapshot === 'object' &&
+    !Array.isArray(snapshot)
+  ) {
+    changes = diffPart5HeadEdits(
+      snapshot as Record<string, unknown>,
+      {
+        clearance_status: p3.clearance_status,
+        dgaqa_inspector_name: p3.dgaqa_inspector_name,
+        dgaqa_rep: p3.dgaqa_rep,
+        inspection_remarks: p3.inspection_remarks,
+      }
+    );
+  }
+  const atRaw = p3.part5_head_edited_at;
+  if (!name && changes.length === 0) {
+    const editedBy = p3.part5_head_edited_by;
+    const hasEditMarker =
+      (editedBy != null && Number(editedBy) > 0) ||
+      (atRaw != null && String(atRaw).trim() !== '');
+    if (!hasEditMarker) return null;
+  }
+  const at = atRaw != null && String(atRaw).trim() ? String(atRaw).trim() : null;
+  return { name: name || 'ORDAQA Head', at, changes };
 }
 
 /**
@@ -1764,6 +2267,25 @@ export function canUserUpdatePart5(
     if (!inspectionPart4Saved(ir)) return false;
     if (!part4ApprovedByTeamHead(ir)) return false;
   }
+  if (ordqaPart5Approved(ir)) return false;
+  if (ordqaPart5Submitted(ir)) return false;
+  const status = ir.status || '';
+  if (!['request_approved', 'assigned', 'in_progress'].includes(status)) return false;
+  if (userRole === 'administrator') return true;
+  if (!userId) return false;
+  return ir.ordaqa_inspector_id != null && Number(ir.ordaqa_inspector_id) === userId;
+}
+
+/**
+ * Assigned ORDAQA inspector has outstanding Part V work (dashboard / Action Required).
+ * Shown once they are assigned in Part III — filling may still wait on Part IV when R&QA is involved.
+ */
+export function userHasPart5ActionRequired(
+  ir: Parameters<typeof canUserUpdatePart5>[0],
+  userId: number,
+  userRole?: string
+): boolean {
+  if (!inspectionRequiresOrdqaPart5(ir)) return false;
   if (ordqaPart5Approved(ir)) return false;
   if (ordqaPart5Submitted(ir)) return false;
   const status = ir.status || '';
@@ -1818,6 +2340,7 @@ function firstNonEmpty(...vals: Array<string | null | undefined>): string | null
  */
 export function resolveInspectionCustody(ir: {
   status?: string | null;
+  rejection_reason?: string | null;
   so_involves_rqa?: unknown;
   so_involves_dgaqa?: unknown;
   confirmations?: unknown;
@@ -1868,7 +2391,13 @@ export function resolveInspectionCustody(ir: {
   const part1Approver = firstNonEmpty(ir.part1_approver_name, ir.part1_approved_by_name);
 
   if (status === 'rejected') {
-    return { stage: 'Rejected', role: '—', name: null, action: 'Inspection request was rejected' };
+    const rej = resolveInspectionRejection(ir);
+    return {
+      stage: 'Rejected',
+      role: '—',
+      name: null,
+      action: rej?.byLabel || 'Inspection request was rejected',
+    };
   }
   if (status === 'completed' || ir.final_qa_approver_id != null) {
     return {

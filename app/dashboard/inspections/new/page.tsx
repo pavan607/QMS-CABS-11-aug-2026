@@ -45,7 +45,11 @@ import {
 import {
   isSupplyOrderAttachment,
   parsePart1Bool,
+  formatPart1Quantity,
+  isPositiveDecimalQty,
   SUPPLY_ORDER_ATTACHMENT_DESCRIPTION,
+  SUPPLY_ORDER_MAX_BYTES,
+  LOG_BOOK_MAX_BYTES,
 } from '@/lib/part1-so-fields';
 import { CalendarDateInput } from '@/components/calendar-date-input';
 import { DateTimeLocalInput, parseDateTimeLocalParts } from '@/components/datetime-local-input';
@@ -377,11 +381,11 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
     oem_name: String(ir.oem_name || ''),
     criticality: parseDbStringArray(ir.criticality),
     quantity:
-      ir.quantity != null && ir.quantity_per_set != null ? String(ir.quantity) : '',
+      ir.quantity != null && ir.quantity_per_set != null ? formatPart1Quantity(ir.quantity) : '',
     quantity_per_set:
-      ir.quantity != null && ir.quantity_per_set != null ? String(ir.quantity_per_set) : '',
+      ir.quantity != null && ir.quantity_per_set != null ? formatPart1Quantity(ir.quantity_per_set) : '',
     total_quantity:
-      ir.quantity != null && ir.quantity_per_set == null ? String(ir.quantity) : '',
+      ir.quantity != null && ir.quantity_per_set == null ? formatPart1Quantity(ir.quantity) : '',
     previous_stage_cleared_answer: previousStageCleared.answer,
     previous_stage_cleared: previousStageCleared.stages,
     logbook_attached: String(ir.logbook_attached || ''),
@@ -1193,11 +1197,11 @@ function NewInspectionRequestForm() {
           part_number: ir.part_number || '',
           serial_number: serialArr,
           quantity:
-            ir.quantity != null && ir.quantity_per_set != null ? String(ir.quantity) : '',
+            ir.quantity != null && ir.quantity_per_set != null ? formatPart1Quantity(ir.quantity) : '',
           quantity_per_set:
-            ir.quantity != null && ir.quantity_per_set != null ? String(ir.quantity_per_set) : '',
+            ir.quantity != null && ir.quantity_per_set != null ? formatPart1Quantity(ir.quantity_per_set) : '',
           total_quantity:
-            ir.quantity != null && ir.quantity_per_set == null ? String(ir.quantity) : '',
+            ir.quantity != null && ir.quantity_per_set == null ? formatPart1Quantity(ir.quantity) : '',
           previous_stage_cleared_answer: previousStageCleared.answer,
           previous_stage_cleared: previousStageCleared.stages,
           logbook_attached: ir.logbook_attached || '',
@@ -1267,11 +1271,11 @@ function NewInspectionRequestForm() {
       lru_id: formState.lru_id ? parseInt(formState.lru_id, 10) : null,
       sru_id: formState.sru_id ? parseInt(formState.sru_id, 10) : null,
       quantity: formState.total_quantity.trim()
-        ? parseInt(formState.total_quantity, 10)
+        ? parseFloat(formState.total_quantity)
         : formState.quantity
           ? parseInt(formState.quantity, 10)
           : null,
-      quantity_per_set: formState.total_quantity.trim() ? null : formState.quantity_per_set ? parseInt(formState.quantity_per_set, 10) : null,
+      quantity_per_set: formState.total_quantity.trim() ? null : formState.quantity_per_set ? parseFloat(formState.quantity_per_set) : null,
       serial_number: formState.serial_number.join(', '),
       previous_stage_cleared:
         formState.previous_stage_cleared_answer === 'no'
@@ -1879,12 +1883,12 @@ function NewInspectionRequestForm() {
       const per = form.quantity_per_set.trim();
       const isPositiveInt = (s: string) => /^\d+$/.test(s) && parseInt(s, 10) >= 1;
       if (tq) {
-        if (!isPositiveInt(tq)) {
-          errors.total_quantity = '11. Qty must be a positive whole number';
+        if (!isPositiveDecimalQty(tq)) {
+          errors.total_quantity = '11. Qty must be a positive number (decimals allowed)';
         }
       } else if (sets && per) {
         if (!isPositiveInt(sets)) errors.quantity = '10. No. of sets must be a positive whole number';
-        if (!isPositiveInt(per)) errors.quantity_per_set = '10. Qty per set must be a positive whole number';
+        if (!isPositiveDecimalQty(per)) errors.quantity_per_set = '10. Qty per set must be a positive number (decimals allowed)';
       } else if (sets || per) {
         if (sets && !per) errors.quantity_per_set = '10. Enter both no. of sets and qty per set, or use 11. Qty only';
         if (!sets && per) errors.quantity = '10. Enter both no. of sets and qty per set, or use 11. Qty only';
@@ -2421,7 +2425,9 @@ function NewInspectionRequestForm() {
                   <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="flex-1 truncate">{supplyOrderFile.name}</span>
                   <span className="text-xs text-muted-foreground shrink-0">
-                    {(supplyOrderFile.size / 1024).toFixed(0)} KB
+                    {supplyOrderFile.size >= 1024 * 1024
+                      ? `${(supplyOrderFile.size / (1024 * 1024)).toFixed(1)} MB`
+                      : `${(supplyOrderFile.size / 1024).toFixed(0)} KB`}
                   </span>
                   <Button
                     type="button"
@@ -2446,8 +2452,8 @@ function NewInspectionRequestForm() {
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) {
-                          if (f.size > 20 * 1024 * 1024) {
-                            alert('File size exceeds 20MB limit');
+                          if (f.size > SUPPLY_ORDER_MAX_BYTES) {
+                            alert('File size exceeds 300MB limit');
                             return;
                           }
                           setSupplyOrderFile(f);
@@ -2465,7 +2471,7 @@ function NewInspectionRequestForm() {
                   }`}
                 >
                   <Paperclip className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-muted-foreground">Upload Supply Order (max 20MB) *</span>
+                  <span className="text-muted-foreground">Upload Supply Order (max 300MB) *</span>
                   <input
                     type="file"
                     className="hidden"
@@ -2473,8 +2479,8 @@ function NewInspectionRequestForm() {
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) {
-                        if (f.size > 20 * 1024 * 1024) {
-                          alert('File size exceeds 20MB limit');
+                        if (f.size > SUPPLY_ORDER_MAX_BYTES) {
+                          alert('File size exceeds 300MB limit');
                           return;
                         }
                         setSupplyOrderFile(f);
@@ -2718,9 +2724,9 @@ function NewInspectionRequestForm() {
                   <Input
                     className="h-9 min-w-0 flex-1 rounded-none border-0 shadow-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
                     type="number"
-                    min={1}
-                    step={1}
-                    inputMode="numeric"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
                     disabled={form.total_quantity.trim() !== ''}
                     placeholder="Qty/set"
                     value={form.quantity_per_set}
@@ -2741,9 +2747,9 @@ function NewInspectionRequestForm() {
                 <Input
                   className={errClass('total_quantity')}
                   type="number"
-                  min={1}
-                  step={1}
-                  inputMode="numeric"
+                  min={0}
+                  step="any"
+                  inputMode="decimal"
                   disabled={form.quantity.trim() !== '' || form.quantity_per_set.trim() !== ''}
                   placeholder="Total quantity"
                   value={form.total_quantity}
@@ -2870,7 +2876,7 @@ function NewInspectionRequestForm() {
                         }`}
                       >
                         <Paperclip className="h-4 w-4 text-muted-foreground" />
-                        <span className="text-muted-foreground">Attach log book copy (max 20MB) *</span>
+                        <span className="text-muted-foreground">Attach log book copy (max 300MB) *</span>
                         <input
                           type="file"
                           className="hidden"
@@ -2878,8 +2884,8 @@ function NewInspectionRequestForm() {
                           onChange={(e) => {
                             const f = e.target.files?.[0];
                             if (f) {
-                              if (f.size > 20 * 1024 * 1024) {
-                                alert('File size exceeds 20MB limit');
+                              if (f.size > LOG_BOOK_MAX_BYTES) {
+                                alert('File size exceeds 300MB limit');
                                 return;
                               }
                               setLogbookFile(f);
@@ -3266,7 +3272,7 @@ function NewInspectionRequestForm() {
                 ? 'Resubmit for Part I Approval'
                 : loadedIrStatus === 'draft' || !editId
                   ? 'Submit Inspection Request'
-                  : 'Save changes'}
+                  : 'Forward to GD-4'}
           </Button>
         </div>
       </form>
