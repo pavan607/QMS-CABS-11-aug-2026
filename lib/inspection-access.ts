@@ -247,6 +247,8 @@ export function roleHasGlobalInspectionAccess(role: string): boolean {
   return (
     role === 'administrator' ||
     role === 'os_director' ||
+    role === 'program_director' ||
+    role === 'project_director' ||
     role === 'os' ||
     role === 'director'
   );

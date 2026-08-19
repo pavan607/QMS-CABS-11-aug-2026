@@ -54,6 +54,8 @@ const DEPARTMENTS = [
 
 const DESIGNATIONS = [
   { value: 'OS & Director', label: 'OS & Director', icon: Building2 },
+  { value: 'PGD', label: 'Program Director (PGD)', icon: Crown },
+  { value: 'PD', label: 'Project Director (PD)', icon: Crown },
   { value: 'GD', label: 'Group Director (GD)', icon: Crown },
   { value: 'DGD', label: 'Deputy Group Director (DGD)', icon: Shield },
   { value: 'DH', label: 'Division Head (DH)', icon: UserCog },
@@ -70,6 +72,8 @@ const DESIGNATION_COLORS: Record<string, string> = {
   'Inspector': 'bg-emerald-500 hover:bg-emerald-600',
   'Designer': 'bg-slate-500 hover:bg-slate-600',
   'OS & Director': 'bg-violet-500 hover:bg-violet-600',
+  'PGD': 'bg-fuchsia-600 hover:bg-fuchsia-700',
+  'PD': 'bg-orange-500 hover:bg-orange-600',
 };
 
 const DESIGNATION_ICON_COLORS: Record<string, string> = {
@@ -80,6 +84,8 @@ const DESIGNATION_ICON_COLORS: Record<string, string> = {
   'Inspector': 'text-emerald-500',
   'Designer': 'text-slate-500',
   'OS & Director': 'text-violet-500',
+  'PGD': 'text-fuchsia-600',
+  'PD': 'text-orange-500',
 };
 
 /** Stored designation value — principal has no department. */

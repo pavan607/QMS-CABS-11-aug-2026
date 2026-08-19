@@ -10,6 +10,8 @@ export const SYSTEM_ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: 'ordaqa_head', label: 'ORDAQA Head' },
   { value: 'ordaqa_inspector', label: 'Inspector / ORDAQA Rep' },
   { value: 'os_director', label: 'OS & Director' },
+  { value: 'program_director', label: 'Program Director (PGD)' },
+  { value: 'project_director', label: 'Project Director (PD)' },
   { value: 'administrator', label: 'Administrator' },
 ];
 

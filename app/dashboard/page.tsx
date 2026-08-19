@@ -91,6 +91,18 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; icon: any; gre
     icon: Building2,
     greeting: 'Organisation-wide inspection overview.',
   },
+  program_director: {
+    label: 'Program Director (PGD)',
+    color: 'bg-fuchsia-600',
+    icon: Crown,
+    greeting: 'Organisation-wide inspection overview.',
+  },
+  project_director: {
+    label: 'Project Director (PD)',
+    color: 'bg-orange-600',
+    icon: Crown,
+    greeting: 'Organisation-wide inspection overview.',
+  },
   ordaqa_inspector: { label: 'Inspector / ORDAQA Rep', color: 'bg-cyan-600', icon: ClipboardCheck, greeting: 'Your assigned ORDAQA inspections.' },
   request_approver: { label: 'Team Head', color: 'bg-teal-600', icon: UserCheck, greeting: 'Your team\'s inspection status.' },
   inspector: { label: 'Inspector / QA Rep', color: 'bg-emerald-600', icon: ClipboardCheck, greeting: 'Your assigned inspections.' },
@@ -282,7 +294,7 @@ export default function DashboardPage() {
             <StatCard icon={AlertCircle} label="Needs Action" value={(actions.pending_approval || 0) + (actions.needs_assignment || 0)} sub={`${actions.pending_approval || 0} approvals, ${actions.needs_assignment || 0} assignments`} color="amber" href="/dashboard/inspections?highlight=action" />
           </>
         )}
-        {!isPart1Approver && (userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director') && (
+        {!isPart1Approver && (userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director' || userRole === 'program_director' || userRole === 'project_director') && (
           <>
             <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
             <StatCard
@@ -290,7 +302,7 @@ export default function DashboardPage() {
               label={userRole === 'qa_head' ? 'Needs Review' : userRole === 'qa_approver' ? 'Assign Inspectors' : 'Pending Forward'}
               value={actions.pending_approval || 0}
               sub={
-                userRole === 'os_director'
+                userRole === 'os_director' || userRole === 'program_director' || userRole === 'project_director'
                   ? 'Awaiting request approval'
                   : userRole === 'qa_head'
                     ? 'Part II / memo returned'

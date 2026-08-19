@@ -9,6 +9,8 @@ export type UserRole =
   | 'ordaqa_head'
   | 'ordaqa_inspector'
   | 'os_director'
+  | 'program_director'
+  | 'project_director'
   | 'administrator';
 
 export interface Permission {
@@ -109,6 +111,32 @@ export const rolePermissions: Record<UserRole, Permission[]> = {
     { resource: 'profile', actions: ['read', 'update_own'] },
   ],
   os_director: [
+    { resource: 'inspection_request', actions: ['read', 'assign', 'approve', 'reject', 'close'] },
+    { resource: 'quality_check', actions: ['read'] },
+    { resource: 'checklist', actions: ['read'] },
+    { resource: 'checklist_item', actions: ['read'] },
+    { resource: 'attachment', actions: ['read'] },
+    { resource: 'document', actions: ['read'] },
+    { resource: 'help_desk', actions: ['read'] },
+    { resource: 'report', actions: ['create', 'read', 'export'] },
+    { resource: 'user', actions: ['read'] },
+    { resource: 'notification', actions: ['read', 'update_own'] },
+    { resource: 'profile', actions: ['read', 'update_own'] },
+  ],
+  program_director: [
+    { resource: 'inspection_request', actions: ['read', 'assign', 'approve', 'reject', 'close'] },
+    { resource: 'quality_check', actions: ['read'] },
+    { resource: 'checklist', actions: ['read'] },
+    { resource: 'checklist_item', actions: ['read'] },
+    { resource: 'attachment', actions: ['read'] },
+    { resource: 'document', actions: ['read'] },
+    { resource: 'help_desk', actions: ['read'] },
+    { resource: 'report', actions: ['create', 'read', 'export'] },
+    { resource: 'user', actions: ['read'] },
+    { resource: 'notification', actions: ['read', 'update_own'] },
+    { resource: 'profile', actions: ['read', 'update_own'] },
+  ],
+  project_director: [
     { resource: 'inspection_request', actions: ['read', 'assign', 'approve', 'reject', 'close'] },
     { resource: 'quality_check', actions: ['read'] },
     { resource: 'checklist', actions: ['read'] },
@@ -259,6 +287,14 @@ export function getAllowedStatusTransitions(
       approved: ['closed'],
     },
     os_director: {
+      completed: ['approved', 'rejected'],
+      approved: ['closed'],
+    },
+    program_director: {
+      completed: ['approved', 'rejected'],
+      approved: ['closed'],
+    },
+    project_director: {
       completed: ['approved', 'rejected'],
       approved: ['closed'],
     },

@@ -20,6 +20,8 @@ export const OBSERVATION_CHAT_VIEW_ROLES = [
   'ordaqa_head',
   'ordaqa_inspector',
   'os_director',
+  'program_director',
+  'project_director',
   'os',
   'director',
 ] as const;
@@ -36,7 +38,9 @@ export function roleCanViewObservationChats(role: string): boolean {
 /** Dashboard home banner — hidden for OS & Director (they still get the sidebar menu). */
 export function roleCanSeeObservationChatBanner(role: string): boolean {
   const normalized = normalizeObservationChatRole(role);
-  if (normalized === 'os_director') return false;
+  if (normalized === 'os_director' || normalized === 'program_director' || normalized === 'project_director') {
+    return false;
+  }
   return roleCanViewObservationChats(role);
 }
 

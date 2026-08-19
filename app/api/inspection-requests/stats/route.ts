@@ -447,7 +447,11 @@ export async function GET(request: NextRequest) {
         needs_assignment: parseInt(pendingPart5Res.rows[0]?.count || 0),
         active_ordaqa: parseInt(activeOrdaqaRes.rows[0]?.count || 0),
       };
-    } else if (userRole === 'os_director') {
+    } else if (
+      userRole === 'os_director' ||
+      userRole === 'program_director' ||
+      userRole === 'project_director'
+    ) {
       const pendingApprovalRes = await query(
         `SELECT COUNT(*) as count FROM inspection_requests
          WHERE status IN ('pending_request_approval', 'pending')`,

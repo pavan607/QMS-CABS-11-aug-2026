@@ -26,6 +26,8 @@ const DEPARTMENTS = [
 
 const DESIGNATIONS = [
   { value: 'OS & Director', label: 'OS & Director' },
+  { value: 'PGD', label: 'Program Director (PGD)' },
+  { value: 'PD', label: 'Project Director (PD)' },
   { value: 'GD', label: 'Group Director (GD)' },
   { value: 'DGD', label: 'Deputy Group Director (DGD)' },
   { value: 'DH', label: 'Division Head (DH)' },
