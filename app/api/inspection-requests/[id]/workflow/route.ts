@@ -81,6 +81,8 @@ import {
   getPart4TeamHeadApprovalStatusRaw,
   validatePart1DocumentDetailsForward,
   part1VenueIsOutstation,
+  resolveOutstationInspectionFromVenue,
+  isOutstationInspectionEnabled,
 } from '@/lib/inspection-display';
 import {
   userCanAccessInspectionRequest,
@@ -1044,6 +1046,13 @@ export async function POST(
           return NextResponse.json({ error: teamHeadPart2Err }, { status: 400 });
         }
         const venueRequiresOutstation = part1VenueIsOutstation(ir.venue, ir.location);
+        // Outstation follows Part I venue: Outstation=on, Within CABS/Bangalore=off
+        const resolveOutstation = (incomingFlag?: unknown) =>
+          resolveOutstationInspectionFromVenue(
+            ir.venue,
+            ir.location,
+            !!incomingFlag
+          );
 
         if (alreadyAssigned) {
           const incomingP2 =
@@ -1052,8 +1061,7 @@ export async function POST(
               : null;
           if (incomingP2) {
             const existingP2 = parsePart2Data(ir.part2_data);
-            const outstationInspection =
-              venueRequiresOutstation || !!incomingP2.outstation_inspection;
+            const outstationInspection = resolveOutstation(incomingP2.outstation_inspection);
             const mergedP2 = {
               ...existingP2,
               third_party_agency: String(incomingP2.third_party_agency || ''),
@@ -1095,8 +1103,7 @@ export async function POST(
           const existingP2 = parsePart2Data(ir.part2_data);
           let mergedP2 = existingP2;
           if (incomingP2) {
-            const outstationInspection =
-              venueRequiresOutstation || !!incomingP2.outstation_inspection;
+            const outstationInspection = resolveOutstation(incomingP2.outstation_inspection);
             mergedP2 = {
               ...existingP2,
               third_party_agency: String(incomingP2.third_party_agency || ''),
@@ -1109,6 +1116,14 @@ export async function POST(
             };
           } else if (venueRequiresOutstation) {
             mergedP2 = { ...existingP2, outstation_inspection: true };
+          } else {
+            mergedP2 = {
+              ...existingP2,
+              outstation_inspection: false,
+              email_sent: null,
+              email_sent_by: null,
+              email_sent_date: null,
+            };
           }
           await query(
             `UPDATE inspection_requests
@@ -1128,12 +1143,10 @@ export async function POST(
         try {
           const teamHeadName =
             (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
-          const outstationOn =
-            venueRequiresOutstation ||
-            Boolean(
-              incomingP2ForValidate?.outstation_inspection ??
-                parsePart2Data(ir.part2_data).outstation_inspection
-            );
+          const outstationOn = resolveOutstation(
+            incomingP2ForValidate?.outstation_inspection ??
+              parsePart2Data(ir.part2_data).outstation_inspection
+          );
           if (alreadyAssigned) {
             await notifyInspectorsReassignedPart2(
               parseInt(id, 10),
@@ -1199,9 +1212,9 @@ export async function POST(
             ? (body.part2_data as Record<string, unknown>)
             : parsePart2Data(body.part2_data);
         const existingP2 = parsePart2Data(ir.part2_data);
-        if (!existingP2.outstation_inspection) {
+        if (!isOutstationInspectionEnabled(ir)) {
           return NextResponse.json(
-            { error: 'Outstation Inspection is not enabled by Team Head – QA' },
+            { error: 'Outstation Inspection is not enabled (Part I venue is not Outstation)' },
             { status: 400 }
           );
         }
@@ -2810,6 +2823,7 @@ export async function POST(
         }
         const skipPart23Reject = inspectionUsesLegacyOpenRqaPart4(ir);
         const readyForFinalReject = inspectionReadyForFinalTeamHeadApproval(ir);
+        const part4RejectWindow = canUserRejectPart4(ir, userId, userRole);
         const inspectorsAssignedForReject = hasInspectorsAssigned(ir);
         const part2RejectWindow =
           ['request_approved', 'assigned', 'in_progress', 'inspection_completed'].includes(
@@ -2819,12 +2833,12 @@ export async function POST(
             ? ir.status === 'inspection_completed' || !inspectorsAssignedForReject
             : !inspectorsAssignedForReject);
 
-        if (!readyForFinalReject && !part2RejectWindow) {
+        if (!readyForFinalReject && !part2RejectWindow && !part4RejectWindow) {
           return NextResponse.json(
             {
               error: inspectionRequiresOrdqaPart5(ir)
-                ? 'Reject is not available at this stage (Part V must be approved for final reject, or reject during Part II before inspector assignment)'
-                : 'Reject is not available at this stage (Part IV must be approved for final reject, or reject during Part II before inspector assignment)',
+                ? 'Reject is not available at this stage (while Part IV awaits Team Head approval, after Part V approval for final reject, or during Part II before inspector assignment)'
+                : 'Reject is not available at this stage (while Part IV awaits Team Head approval, after Part IV approval for final reject, or during Part II before inspector assignment)',
             },
             { status: 400 }
           );
@@ -2854,6 +2868,11 @@ export async function POST(
         }
 
         const rejectStakeholders = snapshotIrStakeholderIds(ir);
+        const rejectHistoryRole = readyForFinalReject
+          ? 'qa_reject_final'
+          : part4RejectWindow
+            ? 'qa_reject_part4'
+            : 'qa_reject_part2';
 
         const existingP2Reject = parsePart2Data(ir.part2_data);
         const prevRejectHistory = Array.isArray(existingP2Reject.return_history)
@@ -2868,7 +2887,7 @@ export async function POST(
             {
               at: new Date().toISOString(),
               by_user_id: userId,
-              role: readyForFinalReject ? 'qa_reject_final' : 'qa_reject_part2',
+              role: rejectHistoryRole,
               comments: trimmedReason,
               prior_status: ir.status,
             },
@@ -2907,6 +2926,8 @@ export async function POST(
           if (Number.isFinite(n) && n > 0 && !inspectorUserIds.includes(n)) inspectorUserIds.push(n);
         }
         try {
+          const thRejectActorName =
+            (session.user as { name?: string })?.name?.trim() || 'Team Head – QA';
           await notifyInspectionRejected(
             parseInt(id, 10),
             String(ir.request_number),
@@ -2914,7 +2935,8 @@ export async function POST(
             inspectorUserIds[0],
             trimmedReason,
             userId,
-            [...rejectStakeholders, ...inspectorUserIds]
+            [...rejectStakeholders, ...inspectorUserIds],
+            thRejectActorName
           );
         } catch (e) {
           console.error('QA reject notification:', e);

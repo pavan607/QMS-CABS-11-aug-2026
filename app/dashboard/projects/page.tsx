@@ -30,11 +30,24 @@ interface Project {
   code: string;
   description: string;
   status: string;
+  program_director_id?: number | null;
+  program_director_name?: string | null;
+  program_director_employee_id?: string | null;
+  program_director_designation?: string | null;
   subsystem_count: string;
   lru_count: string;
   sru_count: string;
   created_by_name: string;
   created_at: string;
+}
+
+interface PgdUser {
+  id: number;
+  name: string;
+  employee_id: string;
+  designation: string;
+  role: string;
+  status: string;
 }
 
 interface ProjectAttachment {
@@ -111,7 +124,14 @@ export default function ProjectsPage() {
   const [contextSubsystemId, setContextSubsystemId] = useState<number | null>(null);
   const [contextLruId, setContextLruId] = useState<number | null>(null);
 
-  const [projectForm, setProjectForm] = useState({ name: '', code: '', description: '', status: 'active' });
+  const [projectForm, setProjectForm] = useState({
+    name: '',
+    code: '',
+    description: '',
+    status: 'active',
+    program_director_id: '',
+  });
+  const [pgdUsers, setPgdUsers] = useState<PgdUser[]>([]);
   const [subsystemForm, setSubsystemForm] = useState({ name: '', code: '', description: '', status: 'active' });
   const [lruForm, setLruForm] = useState({ name: '', code: '', part_number: '', description: '', status: 'active', serial_numbers: [] as string[] });
   const [sruForm, setSruForm] = useState({ name: '', code: '', part_number: '', description: '', status: 'active', serial_numbers: [] as string[] });
@@ -187,9 +207,31 @@ export default function ProjectsPage() {
     }
   }, [searchTerm]);
 
+  const fetchPgdUsers = useCallback(async () => {
+    try {
+      const response = await fetch('/api/users?status=active');
+      const data = await response.json();
+      const users = (data.users || []) as PgdUser[];
+      const pgds = users.filter((u) => {
+        const des = String(u.designation || '').trim().toUpperCase();
+        const role = String(u.role || '').trim().toLowerCase();
+        return des === 'PGD' || role === 'program_director';
+      });
+      const byId = new Map<number, PgdUser>();
+      for (const u of pgds) byId.set(u.id, u);
+      setPgdUsers(Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)));
+    } catch (error) {
+      console.error('Error fetching Program Directors:', error);
+    }
+  }, []);
+
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
+
+  useEffect(() => {
+    fetchPgdUsers();
+  }, [fetchPgdUsers]);
 
   const fetchSubsystems = async (projectId: number) => {
     setLoadingSubsystems(prev => new Set(prev).add(projectId));
@@ -290,7 +332,7 @@ export default function ProjectsPage() {
   // --- Dialog handlers ---
 
   const openAddProject = () => {
-    setProjectForm({ name: '', code: '', description: '', status: 'active' });
+    setProjectForm({ name: '', code: '', description: '', status: 'active', program_director_id: '' });
     setReferredDocs([]);
     setPendingReferredFiles([]);
     setDialogMode('add-project');
@@ -298,7 +340,13 @@ export default function ProjectsPage() {
 
   const openEditProject = (project: Project) => {
     setEditingItem(project);
-    setProjectForm({ name: project.name, code: project.code, description: project.description || '', status: project.status });
+    setProjectForm({
+      name: project.name,
+      code: project.code,
+      description: project.description || '',
+      status: project.status,
+      program_director_id: project.program_director_id ? String(project.program_director_id) : '',
+    });
     setPendingReferredFiles([]);
     setReferredDocs([]);
     setDialogMode('edit-project');
@@ -370,6 +418,10 @@ export default function ProjectsPage() {
 
   const handleProjectSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!projectForm.program_director_id || projectForm.program_director_id === 'none') {
+      alert('Select the Program Director (PGD) this programme relates to.');
+      return;
+    }
     setSavingProject(true);
     try {
       const isEdit = dialogMode === 'edit-project';
@@ -743,6 +795,14 @@ export default function ProjectsPage() {
                             <div className="flex flex-col gap-0.5 min-w-0">
                               <span className="font-semibold leading-tight">{project.name}</span>
                               <span className="text-xs font-mono text-muted-foreground">{project.code}</span>
+                              {project.program_director_name && (
+                                <span className="text-xs text-muted-foreground">
+                                  PGD: {project.program_director_name}
+                                  {project.program_director_employee_id
+                                    ? ` (${project.program_director_employee_id})`
+                                    : ''}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </TableCell>
@@ -1014,6 +1074,35 @@ export default function ProjectsPage() {
                 <Label htmlFor="proj-code">Project Code *</Label>
                 <Input id="proj-code" required placeholder="e.g. PROJ-001" value={projectForm.code} onChange={(e) => setProjectForm({ ...projectForm, code: e.target.value.toUpperCase() })} />
                 <p className="text-xs text-muted-foreground">Unique identifier, auto-uppercased</p>
+              </div>
+              <div className="grid gap-2">
+                <Label>Programme related to (PGD) *</Label>
+                <Select
+                  value={projectForm.program_director_id}
+                  onValueChange={(v) => setProjectForm({ ...projectForm, program_director_id: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select Program Director..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pgdUsers.length === 0 ? (
+                      <SelectItem value="none" disabled>
+                        No Program Directors found
+                      </SelectItem>
+                    ) : (
+                      pgdUsers.map((u) => (
+                        <SelectItem key={u.id} value={String(u.id)}>
+                          {u.name}
+                          {u.employee_id ? ` (${u.employee_id})` : ''}
+                          {u.designation ? ` — ${u.designation}` : ''}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Users with designation PGD or system role Program Director.
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="proj-desc">Description</Label>

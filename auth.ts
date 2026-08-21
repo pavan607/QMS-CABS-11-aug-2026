@@ -1,13 +1,24 @@
 import 'dotenv/config';
-import NextAuth from 'next-auth';
+import NextAuth, { CredentialsSignin } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { authConfig } from './auth.config';
 import pool from '@/lib/db';
 import bcrypt from 'bcryptjs';
-import { z } from 'zod';
 import { normalizeEmployeeId } from '@/lib/employee-id';
 
 const STATUS_RECHECK_INTERVAL_MS = 60_000;
+
+class InvalidEmployeeIdError extends CredentialsSignin {
+  code = 'invalid_employee_id';
+}
+
+class InvalidPasswordError extends CredentialsSignin {
+  code = 'invalid_password';
+}
+
+class AccountInactiveError extends CredentialsSignin {
+  code = 'account_inactive';
+}
 
 async function getUserByEmployeeId(employeeId: string) {
   const id = normalizeEmployeeId(employeeId);
@@ -82,34 +93,37 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
         const rawId = typeof credentials?.employee_id === 'string' ? credentials.employee_id : '';
         const rawPw = typeof credentials?.password === 'string' ? credentials.password : '';
         const employee_id = normalizeEmployeeId(rawId);
-        const password = rawPw.trim();
+        const password = rawPw;
 
-        const parsedCredentials = z
-          .object({ employee_id: z.string().min(1), password: z.string().min(6) })
-          .safeParse({ employee_id, password });
-
-        if (parsedCredentials.success) {
-          const user = await getUserByEmployeeId(parsedCredentials.data.employee_id);
-          if (!user) return null;
-
-          if (user.status !== 'active') return null;
-
-          const passwordsMatch = await bcrypt.compare(password, user.password);
-
-          if (passwordsMatch) {
-            return {
-              id: user.id.toString(),
-              email: user.email || '',
-              name: user.name,
-              role: user.role,
-              employee_id: user.employee_id,
-              designation: user.designation,
-            };
-          }
+        if (!employee_id) {
+          throw new InvalidEmployeeIdError();
+        }
+        if (!password) {
+          throw new InvalidPasswordError();
         }
 
-        console.log('Invalid credentials');
-        return null;
+        const user = await getUserByEmployeeId(employee_id);
+        if (!user) {
+          throw new InvalidEmployeeIdError();
+        }
+
+        if (user.status !== 'active') {
+          throw new AccountInactiveError();
+        }
+
+        const passwordsMatch = await bcrypt.compare(password, user.password);
+        if (!passwordsMatch) {
+          throw new InvalidPasswordError();
+        }
+
+        return {
+          id: user.id.toString(),
+          email: user.email || '',
+          name: user.name,
+          role: user.role,
+          employee_id: user.employee_id,
+          designation: user.designation,
+        };
       },
     }),
   ],

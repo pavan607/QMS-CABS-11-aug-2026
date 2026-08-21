@@ -61,8 +61,12 @@ BEGIN
     AND EXTRACT(MONTH FROM request_date) = EXTRACT(MONTH FROM CURRENT_DATE)
     AND EXTRACT(YEAR FROM request_date) = EXTRACT(YEAR FROM CURRENT_DATE);
   
-  -- Format: IR-OCT-001
-  new_request_number := 'IR-' || current_month || '-' || LPAD(next_number::TEXT, 3, '0');
+  -- Format: IR-OCT-001 … IR-OCT-999, then IR-OCT-1000+ (unlimited)
+  IF next_number < 1000 THEN
+    new_request_number := 'IR-' || current_month || '-' || LPAD(next_number::TEXT, 3, '0');
+  ELSE
+    new_request_number := 'IR-' || current_month || '-' || next_number::TEXT;
+  END IF;
   
   RETURN new_request_number;
 END;

@@ -271,6 +271,7 @@ function expandDocumentDetailsDiff(
     amd_no: 'Amd',
     rev_no: 'Rev',
     date: 'Date',
+    comment: 'Comment',
   };
   const order = ['ts', 'qap', 'sop_mdi', 'qtp_lqtp_softp', 'ftp_atp', 'pc_ta_other'];
   const keys = Array.from(new Set([...order, ...Object.keys(fromObj), ...Object.keys(toObj)]));
@@ -285,7 +286,7 @@ function expandDocumentDetailsDiff(
         ? (toObj[key] as Record<string, unknown>)
         : {};
     const docLabel = labels[key] || key;
-    for (const field of ['approved', 'doc_no', 'amd_no', 'rev_no', 'date'] as const) {
+    for (const field of ['approved', 'doc_no', 'amd_no', 'rev_no', 'date', 'comment'] as const) {
       const fromV =
         field === 'approved'
           ? formatYesNoNa(fromRow[field])

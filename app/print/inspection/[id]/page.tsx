@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import { useParams } from 'next/navigation';
 import {
   formatItemPertainsToDisplay,
@@ -22,6 +22,7 @@ import {
   inspectionSkipsRqaPart2AndPart4,
   isForwardedToOrdqa,
   resolveInspectionRejection,
+  isOutstationInspectionEnabled,
 } from '@/lib/inspection-display';
 import { formatPart1Quantity } from '@/lib/part1-so-fields';
 
@@ -349,7 +350,8 @@ export default function PrintInspectionReport() {
           </thead>
           <tbody>
             {docDetails && Object.keys(docDetails).length > 0 ? docOrder.filter(k => docDetails[k]).map(k => [k, docDetails[k]] as [string, any]).map(([key, val]: [string, any]) => (
-              <tr key={key}>
+              <Fragment key={key}>
+              <tr>
                 <td style={{ fontWeight: 600, fontSize: 10 }}>{docLabels[key] || key}</td>
                 <td className="center" style={{ fontSize: 10 }}>{val?.approved === 'yes' ? 'Yes' : val?.approved === 'no' ? 'No' : val?.approved === 'na' ? 'NA' : val?.approved === 'draft' ? 'Draft' : '—'}</td>
                 <td className="center" style={{ fontSize: 10 }}>{val?.doc_no != null && String(val.doc_no).trim() !== '' ? String(val.doc_no) : '—'}</td>
@@ -357,6 +359,15 @@ export default function PrintInspectionReport() {
                 <td className="center" style={{ fontSize: 10 }}>{val?.rev_no != null && String(val.rev_no).trim() !== '' ? String(val.rev_no) : '—'}</td>
                 <td className="center" style={{ fontSize: 10 }}>{val?.date ? fmtDate(val.date) : '—'}</td>
               </tr>
+              {String(val?.approved || '').toLowerCase() === 'draft' && (
+                <tr>
+                  <td colSpan={6} style={{ fontSize: 10, padding: '4px 8px' }}>
+                    <b>Comment:</b>{' '}
+                    {val?.comment != null && String(val.comment).trim() !== '' ? String(val.comment) : '—'}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             )) : (
               <tr><td colSpan={6} className="center" style={{ fontSize: 10, padding: 6 }}>No document details available</td></tr>
             )}
@@ -507,9 +518,9 @@ export default function PrintInspectionReport() {
             <tr>
               <td className="sno"></td>
               <td className="label sub-label">Outstation Inspection</td>
-              <td className="value">{fmtYesNo(!!p2?.outstation_inspection)}</td>
+              <td className="value">{fmtYesNo(isOutstationInspectionEnabled(ir))}</td>
             </tr>
-            {!!p2?.outstation_inspection && (
+            {isOutstationInspectionEnabled(ir) && (
               <tr>
                 <td className="sno"></td>
                 <td className="label sub-label">Email Sent</td>

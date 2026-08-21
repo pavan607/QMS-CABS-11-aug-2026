@@ -13,9 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { SYSTEM_ROLE_OPTIONS } from '@/lib/user-roles';
-
-const OS_DIRECTOR_DESIGNATION = 'OS & Director';
+import { SYSTEM_ROLE_OPTIONS, userOmitsDepartment, departmentIsOptional } from '@/lib/user-roles';
 
 const DEPARTMENTS = [
   { value: 'User/Designer Department', label: 'User/Designer Department' },
@@ -26,8 +24,8 @@ const DEPARTMENTS = [
 
 const DESIGNATIONS = [
   { value: 'OS & Director', label: 'OS & Director' },
-  { value: 'PGD', label: 'Program Director (PGD)' },
   { value: 'PD', label: 'Project Director (PD)' },
+  { value: 'PGD', label: 'Program Director (PGD)' },
   { value: 'GD', label: 'Group Director (GD)' },
   { value: 'DGD', label: 'Deputy Group Director (DGD)' },
   { value: 'DH', label: 'Division Head (DH)' },
@@ -92,7 +90,7 @@ function userToForm(u: ProfileUser): FormState {
     role: u.role || 'initiator',
     designation: des,
     scientist_rank: u.scientist_rank || '',
-    department: des === OS_DIRECTOR_DESIGNATION ? '' : u.department || '',
+    department: userOmitsDepartment(des, u.role) ? '' : u.department || '',
     reporting_to: u.reporting_to ? String(u.reporting_to) : '',
     status: u.status || 'active',
     contact_number: u.contact_number || '',
@@ -221,7 +219,7 @@ export default function ProfilePage() {
       setError('Designation is required');
       return;
     }
-    if (form.designation !== OS_DIRECTOR_DESIGNATION && !form.department) {
+    if (!departmentIsOptional(form.designation, form.role) && !form.department) {
       setError('Department is required for your designation');
       return;
     }
@@ -236,7 +234,11 @@ export default function ProfilePage() {
       email: emailNorm,
       scientist_rank: form.scientist_rank.trim() || null,
       contact_number: form.contact_number.trim() || null,
-      department: form.designation === OS_DIRECTOR_DESIGNATION ? null : form.department || null,
+      department: userOmitsDepartment(form.designation, form.role)
+        ? null
+        : form.department && form.department !== 'none'
+          ? form.department
+          : null,
     };
 
     if (form.password.trim()) {
@@ -427,7 +429,7 @@ export default function ProfilePage() {
                       setForm({
                         ...form,
                         designation: v,
-                        ...(v === OS_DIRECTOR_DESIGNATION ? { department: '' } : {}),
+                        ...(userOmitsDepartment(v, form.role) ? { department: '' } : {}),
                       })
                     }
                   >
@@ -453,7 +455,7 @@ export default function ProfilePage() {
                 </div>
               </div>
 
-              {form.designation === OS_DIRECTOR_DESIGNATION ? (
+              {userOmitsDepartment(form.designation, form.role) ? (
                 <div className="rounded-md border border-dashed bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
                   <span className="font-medium text-foreground">Department</span>
                   <p className="mt-1 text-xs leading-relaxed">
@@ -462,15 +464,26 @@ export default function ProfilePage() {
                 </div>
               ) : (
                 <div className="grid gap-2">
-                  <Label>Department *</Label>
+                  <Label>
+                    Department{departmentIsOptional(form.designation, form.role) ? '' : ' *'}
+                  </Label>
                   <Select
-                    value={form.department}
-                    onValueChange={(v) => setForm({ ...form, department: v })}
+                    value={form.department || undefined}
+                    onValueChange={(v) => setForm({ ...form, department: v === 'none' ? '' : v })}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select department..." />
+                      <SelectValue
+                        placeholder={
+                          departmentIsOptional(form.designation, form.role)
+                            ? 'Select department (optional)...'
+                            : 'Select department...'
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
+                      {departmentIsOptional(form.designation, form.role) && (
+                        <SelectItem value="none">None</SelectItem>
+                      )}
                       {DEPARTMENTS.map((d) => (
                         <SelectItem key={d.value} value={d.value}>
                           {d.label}
@@ -478,6 +491,11 @@ export default function ProfilePage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {departmentIsOptional(form.designation, form.role) && (
+                    <p className="text-xs text-muted-foreground">
+                      Optional for Program Director / Project Director.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -487,7 +505,13 @@ export default function ProfilePage() {
                   <Select
                     value={form.role}
                     disabled={!isAdmin}
-                    onValueChange={(v) => setForm({ ...form, role: v })}
+                    onValueChange={(v) =>
+                      setForm({
+                        ...form,
+                        role: v,
+                        ...(userOmitsDepartment(form.designation, v) ? { department: '' } : {}),
+                      })
+                    }
                   >
                     <SelectTrigger className={!isAdmin ? 'bg-muted' : undefined}>
                       <SelectValue />

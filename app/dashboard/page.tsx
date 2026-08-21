@@ -14,7 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { formatCalendarDateDisplay, resolveInspectionCustody } from '@/lib/inspection-display';
+import { formatCalendarDateDisplay, resolveInspectionCustody, getLocalYmdToday } from '@/lib/inspection-display';
 import { formatDateTimeDisplay } from '@/lib/inspection-display';
 import { roleCanSeeObservationChatBanner } from '@/lib/observation-chats-shared';
 import { usePermissions } from '@/lib/hooks/usePermissions';
@@ -80,6 +80,31 @@ function formatStatusLabel(status?: string | null): string {
   return STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Local calendar YYYY-MM-DD from a DB timestamp / date string. */
+function toLocalYmd(val: unknown): string | null {
+  if (val == null || val === '') return null;
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    const d = val;
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  const s = String(val).trim();
+  const prefix = s.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (prefix && !/[T\s]\d{2}:\d{2}/.test(s)) return prefix;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return prefix || null;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function isInspectionFromToday(r: {
+  created_at?: unknown;
+  request_date?: unknown;
+}): boolean {
+  const today = getLocalYmdToday();
+  return toLocalYmd(r.created_at) === today || toLocalYmd(r.request_date) === today;
+}
+
 const ROLE_CONFIG: Record<string, { label: string; color: string; icon: any; greeting: string }> = {
   administrator: { label: 'Administrator', color: 'bg-purple-600', icon: Crown, greeting: 'System overview at a glance.' },
   qa_head: { label: 'QA Head', color: 'bg-indigo-600', icon: ShieldCheck, greeting: 'Quality assurance oversight.' },
@@ -95,7 +120,7 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; icon: any; gre
     label: 'Program Director (PGD)',
     color: 'bg-fuchsia-600',
     icon: Crown,
-    greeting: 'Organisation-wide inspection overview.',
+    greeting: 'Inspection overview for your programmes.',
   },
   project_director: {
     label: 'Project Director (PD)',
@@ -216,6 +241,8 @@ export default function DashboardPage() {
       .filter((s) => s.status !== 'draft')
       .reduce((sum, s) => sum + parseInt(s.count), 0) || 0;
   const actions = stats?.actionItems || {};
+  const todaysInspectionRequests = inspectionRequests.filter(isInspectionFromToday);
+  const todayLabel = formatCalendarDateDisplay(getLocalYmdToday());
 
   return (
     <div className="space-y-6">
@@ -296,13 +323,22 @@ export default function DashboardPage() {
         )}
         {!isPart1Approver && (userRole === 'qa_approver' || userRole === 'qa_head' || userRole === 'os_director' || userRole === 'program_director' || userRole === 'project_director') && (
           <>
-            <StatCard icon={CheckSquare} label="Total Inspections" value={total} sub="All requests" color="green" href="/dashboard/inspections" />
+            <StatCard
+              icon={CheckSquare}
+              label="Total Inspections"
+              value={total}
+              sub={userRole === 'program_director' ? 'Your programme projects' : 'All requests'}
+              color="green"
+              href="/dashboard/inspections"
+            />
             <StatCard
               icon={Clock}
-              label={userRole === 'qa_head' ? 'Needs Review' : userRole === 'qa_approver' ? 'Assign Inspectors' : 'Pending Forward'}
+              label={userRole === 'qa_head' ? 'Needs Review' : userRole === 'qa_approver' ? 'Assign Inspectors' : userRole === 'program_director' ? 'In your programmes' : 'Pending Forward'}
               value={actions.pending_approval || 0}
               sub={
-                userRole === 'os_director' || userRole === 'program_director' || userRole === 'project_director'
+                userRole === 'program_director'
+                  ? 'Pending on your programmes'
+                  : userRole === 'os_director' || userRole === 'project_director'
                   ? 'Awaiting request approval'
                   : userRole === 'qa_head'
                     ? 'Part II / memo returned'
@@ -770,38 +806,112 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {/* Notifications */}
-      <Card className="border-0 shadow-sm max-w-xl">
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
-            <Bell className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Notifications</CardTitle>
-            {notifications.length > 0 && (
-              <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{notifications.length}</Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {notifications.length > 0 ? (
-            <div className="space-y-3">
-              {notifications.slice(0, 5).map((n) => (
-                <div key={n.id} className="flex items-start gap-2.5">
-                  <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
-                    n.type === 'error' ? 'bg-red-500' : n.type === 'warning' ? 'bg-amber-500' : n.type === 'success' ? 'bg-green-500' : 'bg-blue-500'
-                  }`} />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium leading-tight">{n.title}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{formatDateTimeDisplay(n.created_at, n.created_at)}</p>
-                  </div>
-                </div>
-              ))}
+      {/* Today's IRs + Notifications */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        <Card className="border-0 shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                <CardTitle className="text-base truncate">Today&apos;s inspection requests</CardTitle>
+                {todaysInspectionRequests.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] h-5 px-1.5 shrink-0">
+                    {todaysInspectionRequests.length}
+                  </Badge>
+                )}
+              </div>
+              <Button variant="ghost" size="sm" className="text-xs h-7 text-muted-foreground shrink-0" asChild>
+                <Link href="/dashboard/inspections">
+                  View All <ArrowRight className="ml-1 h-3 w-3" />
+                </Link>
+              </Button>
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-6">No new notifications</p>
-          )}
-        </CardContent>
-      </Card>
+            <CardDescription className="text-xs">{todayLabel}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {todaysInspectionRequests.length > 0 ? (
+              <div className="space-y-2.5">
+                {todaysInspectionRequests.slice(0, 6).map((r) => {
+                  const custody = resolveInspectionCustody(r);
+                  return (
+                    <Link
+                      key={r.id}
+                      href={`/dashboard/inspections/${r.id}`}
+                      className="flex items-start justify-between gap-3 rounded-md border border-transparent px-2 py-2 hover:bg-muted/50 hover:border-border transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-semibold text-primary">
+                            {r.request_number || `IR-${r.id}`}
+                          </span>
+                          <Badge className={`text-[10px] font-medium ${STATUS_COLORS[r.status] || 'bg-gray-100 text-gray-700'}`}>
+                            {formatStatusLabel(r.status)}
+                          </Badge>
+                        </div>
+                        <p className="text-sm font-medium leading-snug mt-0.5 truncate">
+                          {r.project_name || r.programme_name || r.project_code || r.title || '—'}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                          {custody.stage === 'Completed'
+                            ? 'Completed'
+                            : custody.stage === 'Rejected'
+                              ? 'Rejected'
+                              : `${custody.name || custody.role || '—'} · ${custody.stage}`}
+                        </p>
+                      </div>
+                      <Eye className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
+                    </Link>
+                  );
+                })}
+                {todaysInspectionRequests.length > 6 && (
+                  <p className="text-xs text-muted-foreground text-center pt-1">
+                    +{todaysInspectionRequests.length - 6} more today —{' '}
+                    <Link href="/dashboard/inspections" className="text-primary hover:underline">
+                      view all
+                    </Link>
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-6">
+                No inspection requests created today
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 shadow-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Notifications</CardTitle>
+              {notifications.length > 0 && (
+                <Badge variant="secondary" className="text-[10px] h-5 px-1.5">{notifications.length}</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {notifications.length > 0 ? (
+              <div className="space-y-3">
+                {notifications.slice(0, 5).map((n) => (
+                  <div key={n.id} className="flex items-start gap-2.5">
+                    <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                      n.type === 'error' ? 'bg-red-500' : n.type === 'warning' ? 'bg-amber-500' : n.type === 'success' ? 'bg-green-500' : 'bg-blue-500'
+                    }`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium leading-tight">{n.title}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{formatDateTimeDisplay(n.created_at, n.created_at)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-6">No new notifications</p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* All IRs — clear table for every role */}
       <Card className="border-0 shadow-sm">

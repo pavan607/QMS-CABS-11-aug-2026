@@ -511,11 +511,18 @@ export async function notifyInspectionRejected(
   inspectorId?: number,
   reason?: string,
   excludeUserId?: number | null,
-  extraUserIds: unknown[] = []
+  extraUserIds: unknown[] = [],
+  rejectedByName?: string
 ): Promise<void> {
-  const message = reason
-    ? `Inspection request ${requestNumber} has been rejected. Reason: ${reason}`
-    : `Inspection request ${requestNumber} has been rejected.`;
+  const who = rejectedByName?.trim();
+  const comment = String(reason || '').trim();
+  const message = who
+    ? comment
+      ? `Inspection request ${requestNumber} was rejected by ${who}. Comment: ${comment}`
+      : `Inspection request ${requestNumber} was rejected by ${who}.`
+    : comment
+      ? `Inspection request ${requestNumber} has been rejected. Reason: ${comment}`
+      : `Inspection request ${requestNumber} has been rejected.`;
 
   await notifyIrStakeholders(
     requestId,

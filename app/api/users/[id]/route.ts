@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { query } from '@/lib/db';
+import { userOmitsDepartment } from '@/lib/user-roles';
 import bcrypt from 'bcryptjs';
 
 export async function GET(
@@ -99,7 +100,8 @@ export async function PUT(
 
     const mergedDesignation =
       designation !== undefined && isAdmin ? designation : oldUser.rows[0].designation;
-    const isOsDirector = mergedDesignation === 'OS & Director';
+    const mergedRole = role !== undefined && isAdmin ? role : oldUser.rows[0].role;
+    const omitDepartment = userOmitsDepartment(mergedDesignation, mergedRole);
 
     if (name) addField('name', name);
     if (email !== undefined) {
@@ -111,10 +113,10 @@ export async function PUT(
     if (designation !== undefined && isAdmin) addField('designation', designation || null);
     const canEditScientistRank = isAdmin || currentUserId === parseInt(id);
     if (scientist_rank !== undefined && canEditScientistRank) addField('scientist_rank', scientist_rank || null);
-    if (isOsDirector) {
+    if (omitDepartment) {
       addField('department', null);
     } else if (department !== undefined) {
-      addField('department', department || null);
+      addField('department', !department || department === 'none' ? null : department);
     }
     if (reporting_to !== undefined && isAdmin) addField('reporting_to', reporting_to || null);
     if (status && isAdmin) addField('status', status);

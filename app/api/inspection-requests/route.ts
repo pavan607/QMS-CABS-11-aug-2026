@@ -12,6 +12,9 @@ import {
   userHasGlobalInspectionAccess,
   employeeIsPart1Approver,
   sqlPart1ApproverVisibleCondition,
+  isProgramDirectorUser,
+  sqlProgramDirectorVisibleCondition,
+  ensureProjectsProgramDirectorColumn,
 } from '@/lib/inspection-access';
 import { ensurePart1SoInvolvementColumns, ensureQuantityNumericColumn, parsePart1Bool } from '@/lib/part1-so-fields-server';
 import { PART1_APPROVER_EMPLOYEE_ID } from '@/lib/part1-approver';
@@ -24,6 +27,45 @@ async function ensurePart1ApprovedByColumn(): Promise<void> {
   await query(
     `ALTER TABLE inspection_requests ADD COLUMN IF NOT EXISTS part1_approved_at TIMESTAMPTZ`
   );
+}
+
+/** IR numbers past 999/month must not use LPAD(..., 3) (PostgreSQL truncates and collides). */
+async function ensureUnlimitedInspectionRequestNumberFn(): Promise<void> {
+  await query(`
+    CREATE OR REPLACE FUNCTION generate_inspection_request_number()
+    RETURNS TEXT AS $$
+    DECLARE
+      current_month TEXT;
+      next_number INTEGER;
+      seq_text TEXT;
+      new_request_number TEXT;
+    BEGIN
+      current_month := UPPER(TO_CHAR(CURRENT_DATE, 'Mon'));
+
+      SELECT COALESCE(MAX(
+        CASE
+          WHEN request_number ~ '^IR-[A-Z]{3}-\\d+$'
+          THEN CAST(SUBSTRING(request_number FROM '\\d+$') AS INTEGER)
+          ELSE 0
+        END
+      ), 0) + 1
+      INTO next_number
+      FROM inspection_requests
+      WHERE request_number LIKE 'IR-' || current_month || '-%'
+        AND EXTRACT(MONTH FROM request_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+        AND EXTRACT(YEAR FROM request_date) = EXTRACT(YEAR FROM CURRENT_DATE);
+
+      IF next_number < 1000 THEN
+        seq_text := LPAD(next_number::TEXT, 3, '0');
+      ELSE
+        seq_text := next_number::TEXT;
+      END IF;
+
+      new_request_number := 'IR-' || current_month || '-' || seq_text;
+      RETURN new_request_number;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
 }
 
 // GET all inspection requests
@@ -98,6 +140,7 @@ export async function GET(request: NextRequest) {
         ordaqa_inspector_user.name as ordaqa_inspector_name,
         ordaqa_approver_user.name as ordaqa_approver_name,
         part3_user.name as part3_completed_by_name,
+        part4_user.name as part4_completed_by_name,
         final_qa_user.name as final_qa_approver_name,
         (
           SELECT string_agg(u_qh.name, ', ' ORDER BY u_qh.name)
@@ -135,6 +178,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN users ordaqa_inspector_user ON ir.ordaqa_inspector_id = ordaqa_inspector_user.id
       LEFT JOIN users ordaqa_approver_user ON ir.ordaqa_approver_id = ordaqa_approver_user.id
       LEFT JOIN users part3_user ON ir.part3_completed_by = part3_user.id
+      LEFT JOIN users part4_user ON ir.part4_completed_by = part4_user.id
       LEFT JOIN users final_qa_user ON ir.final_qa_approver_id = final_qa_user.id
       LEFT JOIN projects p ON ir.project_id = p.id
       LEFT JOIN subsystems ss ON ir.subsystem_id = ss.id
@@ -149,9 +193,10 @@ export async function GET(request: NextRequest) {
     const userId = Number.parseInt(String((session.user as any)?.id ?? ''), 10);
     const employeeId = (session.user as any).employee_id as string | undefined;
     const designation = (session.user as any).designation as string | undefined;
-    const hasGlobalInspectionScope = userHasGlobalInspectionAccess(userRole, employeeId);
+    const hasGlobalInspectionScope = userHasGlobalInspectionAccess(userRole, employeeId, designation);
     const isGroupLead = isGroupOversightDesignation(designation);
     const isPart1Approver = employeeIsPart1Approver(employeeId);
+    const isPgd = isProgramDirectorUser(userRole, designation);
 
     const needsStrictUserId =
       !hasGlobalInspectionScope &&
@@ -160,6 +205,8 @@ export async function GET(request: NextRequest) {
         userRole === 'qa_approver' ||
         userRole === 'initiator' ||
         userRole === 'request_approver' ||
+        userRole === 'program_director' ||
+        isPgd ||
         isGroupLead ||
         isPart1Approver);
 
@@ -167,8 +214,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
     }
 
+    if (isPgd) {
+      await ensureProjectsProgramDirectorColumn();
+    }
+
     if (!hasGlobalInspectionScope) {
-      if (isPart1Approver) {
+      if (isPgd) {
+        const ph = `$${paramIndex}`;
+        sql += ` AND ${sqlProgramDirectorVisibleCondition('ir', ph)}`;
+        params.push(userId);
+        paramIndex++;
+      } else if (isPart1Approver) {
         // Employee 1021: Part I queue + own/nominated IRs; hide unforwarded group IRs
         const ph = `$${paramIndex}`;
         sql += ` AND ${sqlPart1ApproverVisibleCondition('ir', ph)}`;
@@ -417,6 +473,7 @@ export async function POST(request: NextRequest) {
     );
     const hasSrusPost = srusPostCheck.rows[0]?.exists;
 
+    await ensureUnlimitedInspectionRequestNumberFn();
     const requestNumberResult = await query('SELECT generate_inspection_request_number() as request_number');
     const requestNumber = requestNumberResult.rows[0].request_number;
 

@@ -43,6 +43,7 @@ function LoginContent() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setIsAccountInactive(false);
     setLoading(true);
 
     try {
@@ -53,23 +54,34 @@ function LoginContent() {
       });
 
       if (result?.error) {
-        try {
-          const statusRes = await fetch('/api/auth/check-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ employee_id: employeeId }),
-          });
-          const statusData = await statusRes.json();
-          if (statusData.inactive) {
-            setIsAccountInactive(true);
-            setError('Your account has been deactivated. Please contact your administrator.');
-          } else {
-            setIsAccountInactive(false);
-            setError('Invalid Employee ID or password');
+        const code = String(result.code || '').toLowerCase();
+        if (code === 'invalid_employee_id') {
+          setError('Invalid Employee ID and password');
+        } else if (code === 'invalid_password') {
+          setError('Invalid password');
+        } else if (code === 'account_inactive') {
+          setIsAccountInactive(true);
+          setError('Your account has been deactivated. Please contact your administrator.');
+        } else {
+          // Fallback when Auth.js does not return a custom code
+          try {
+            const statusRes = await fetch('/api/auth/check-status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ employee_id: employeeId }),
+            });
+            const statusData = await statusRes.json();
+            if (!statusData.exists) {
+              setError('Invalid Employee ID and password');
+            } else if (statusData.inactive) {
+              setIsAccountInactive(true);
+              setError('Your account has been deactivated. Please contact your administrator.');
+            } else {
+              setError('Invalid password');
+            }
+          } catch {
+            setError('Invalid Employee ID and password');
           }
-        } catch {
-          setIsAccountInactive(false);
-          setError('Invalid Employee ID or password');
         }
       } else {
         router.push('/dashboard');

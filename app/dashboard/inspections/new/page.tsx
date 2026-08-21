@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense, Fragment } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -335,9 +335,12 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
   const baseDocs = DOC_TYPES.reduce(
     (acc, d) => ({
       ...acc,
-      [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '' },
+      [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '', comment: '' },
     }),
-    {} as Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string }>
+    {} as Record<
+      string,
+      { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string; comment: string }
+    >
   );
   if (dd) {
     for (const d of DOC_TYPES) {
@@ -356,6 +359,7 @@ function mapPreviousIrToPart1Form(ir: Record<string, unknown>) {
             if (n) return n;
             return String(x).trim();
           })(),
+          comment: String(r.comment ?? ''),
         };
       }
     }
@@ -843,8 +847,8 @@ function createEmptyPart1Form() {
     venue_detail: '',
     document_details: DOC_TYPES.reduce((acc, d) => ({
       ...acc,
-      [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '' },
-    }), {} as Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string }>),
+      [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '', comment: '' },
+    }), {} as Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string; comment: string }>),
     confirmations: {
       approved_docs_available: '',
       logbook_updated: '',
@@ -1121,9 +1125,12 @@ function NewInspectionRequestForm() {
         const baseDocs = DOC_TYPES.reduce(
           (acc, d) => ({
             ...acc,
-            [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '' },
+            [d.key]: { approved: '', doc_no: '', amd_no: '', rev_no: '', date: '', comment: '' },
           }),
-          {} as Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string }>
+          {} as Record<
+            string,
+            { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string; comment: string }
+          >
         );
         if (dd) {
           for (const d of DOC_TYPES) {
@@ -1142,6 +1149,7 @@ function NewInspectionRequestForm() {
                   if (n) return n;
                   return String(x).trim();
                 })(),
+                comment: String(r.comment ?? ''),
               };
             }
           }
@@ -1611,22 +1619,42 @@ function NewInspectionRequestForm() {
   };
 
   const fetchRequestApprovers = async () => {
-    try {
+    const loadOnce = async () => {
       // Field 21: Request Approvers, plus Initiator/Designer with designation DH
       const [raRes, dhRes] = await Promise.all([
         fetch('/api/users?role=request_approver&status=active'),
         fetch('/api/users?role=initiator&designation=DH&status=active'),
       ]);
+      if (!raRes.ok || !dhRes.ok) {
+        throw new Error(
+          `Request approver list failed (${raRes.status}/${dhRes.status})`
+        );
+      }
       const raData = await raRes.json();
       const dhData = await dhRes.json();
       const byId = new Map<number, any>();
       for (const u of [...(raData.users || []), ...(dhData.users || [])]) {
         if (u?.id != null) byId.set(Number(u.id), u);
       }
-      setRequestApprovers(Array.from(byId.values()).sort((a, b) =>
+      return Array.from(byId.values()).sort((a, b) =>
         String(a.name || '').localeCompare(String(b.name || ''))
-      ));
-    } catch (e) { console.error(e); }
+      );
+    };
+
+    try {
+      setRequestApprovers(await loadOnce());
+    } catch (firstErr) {
+      // Next.js may restart the dev server under memory pressure and abort in-flight fetches.
+      try {
+        await new Promise((r) => setTimeout(r, 800));
+        setRequestApprovers(await loadOnce());
+      } catch {
+        console.warn(
+          'Could not load request approvers (will retry on refresh):',
+          firstErr instanceof Error ? firstErr.message : firstErr
+        );
+      }
+    }
   };
 
   const parseSerials = (val: any): string[] => {
@@ -1781,10 +1809,13 @@ function NewInspectionRequestForm() {
         amd_no: '',
         rev_no: '',
         date: '',
+        comment: '',
       };
       const nextRow = part1DocDetailFieldsDisabled(value)
-        ? { approved: value, doc_no: '', amd_no: '', rev_no: '', date: '' }
-        : { ...current, approved: value };
+        ? { approved: value, doc_no: '', amd_no: '', rev_no: '', date: '', comment: '' }
+        : value === 'draft'
+          ? { ...current, approved: value, comment: current.comment || '' }
+          : { ...current, approved: value, comment: '' };
       return {
         ...prev,
         document_details: {
@@ -1947,6 +1978,12 @@ function NewInspectionRequestForm() {
         } else if (!tsDoc?.date?.trim()) {
           errors.document_details = '18. TS — Date is required';
           errors[DOC_ROW_HIGHLIGHT_KEY] = 'ts';
+        } else if (
+          String(tsDoc?.approved || '').toLowerCase() === 'draft' &&
+          !String(tsDoc?.comment ?? '').trim()
+        ) {
+          errors.document_details = '18. TS — Comment is required when Approval Status is Draft';
+          errors[DOC_ROW_HIGHLIGHT_KEY] = 'ts';
         }
       }
     }
@@ -1978,6 +2015,14 @@ function NewInspectionRequestForm() {
         }
         if (!d?.date?.trim()) {
           errors.document_details = `18. ${label} — Date is required`;
+          errors[DOC_ROW_HIGHLIGHT_KEY] = key;
+          break;
+        }
+        if (
+          String(d?.approved || '').toLowerCase() === 'draft' &&
+          !String(d?.comment ?? '').trim()
+        ) {
+          errors.document_details = `18. ${label} — Comment is required when Approval Status is Draft`;
           errors[DOC_ROW_HIGHLIGHT_KEY] = key;
           break;
         }
@@ -3075,8 +3120,10 @@ function NewInspectionRequestForm() {
                   {DOC_TYPES.map(doc => {
                     const approved = form.document_details[doc.key]?.approved || '';
                     const fieldsDisabled = part1DocDetailFieldsDisabled(approved);
+                    const isDraft = approved === 'draft';
                     return (
-                    <tr key={doc.key} className={`border-b last:border-0 ${doc.key === 'ts' ? 'bg-blue-50/50 dark:bg-blue-950/10' : ''}`}>
+                    <Fragment key={doc.key}>
+                    <tr className={`border-b last:border-0 ${doc.key === 'ts' ? 'bg-blue-50/50 dark:bg-blue-950/10' : ''}`}>
                       <td className="py-2 pr-4 font-medium whitespace-nowrap">{doc.label}{doc.key === 'ts' ? ' *' : ''}</td>
                       <td className="py-2 px-2">
                         <Select value={approved} onValueChange={(v) => handleDocApprovedChange(doc.key, v)}>
@@ -3131,6 +3178,26 @@ function NewInspectionRequestForm() {
                         />
                       </td>
                     </tr>
+                    {isDraft && (
+                      <tr className="border-b bg-amber-50/60 dark:bg-amber-950/20">
+                        <td colSpan={6} className="py-3 px-2">
+                          <div className="grid gap-2 max-w-2xl">
+                            <Label htmlFor={`doc-comment-${doc.key}`}>
+                              Comment for {doc.label} (Draft) *
+                            </Label>
+                            <Textarea
+                              id={`doc-comment-${doc.key}`}
+                              className={cn('min-h-[72px]', docRowErrClass(doc.key))}
+                              value={form.document_details[doc.key]?.comment || ''}
+                              onChange={(e) => updateDocDetail(doc.key, 'comment', e.target.value)}
+                              placeholder="Enter comment for this draft document..."
+                              rows={2}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                     );
                   })}
                 </tbody>

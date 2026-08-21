@@ -138,6 +138,23 @@ export function part1VenueIsOutstation(venue: unknown, locationFallback?: unknow
   return part1VenueCategory(venue, locationFallback) === 'Outstation';
 }
 
+/**
+ * Part II Outstation Inspection follows Part I venue automatically:
+ * - Outstation → enabled
+ * - Within CABS / Within Bangalore → disabled
+ * - Unknown/legacy venue → fall back to stored part2_data flag
+ */
+export function resolveOutstationInspectionFromVenue(
+  venue: unknown,
+  locationFallback?: unknown,
+  part2Fallback?: boolean
+): boolean {
+  const cat = part1VenueCategory(venue, locationFallback);
+  if (cat === 'Outstation') return true;
+  if (cat === 'Within CABS' || cat === 'Within Bangalore') return false;
+  return !!part2Fallback;
+}
+
 /** Part I field 5 — Source options. */
 export const SOURCE_OPTIONS = [
   { value: 'indigenous', label: 'Indigenous' },
@@ -259,6 +276,8 @@ export type Part1DocRow = {
   amd_no?: string;
   rev_no?: string;
   date?: string;
+  /** Required when approval status is Draft. */
+  comment?: string;
 };
 
 /** Part I §18 — Doc No. / Amd / Rev / Date are not used when approval is NA or No. */
@@ -1146,15 +1165,21 @@ export function ordaqaHeadReforwardActionRequired(ir: {
 
 /**
  * True when ORDAQA path applies (Part III + Part V).
- * Only after QA Head forwards in Part II — or DGAQA-only auto-forward after Part I
- * (that path sets `forwarded_to_ordaqa`). Part I DGAQA Yes alone does not require III/V.
+ * - After QA Head enables Forward to ORDAQA in Part II (`forwarded_to_ordaqa`), or
+ * - DGAQA/ORDAQA-only Part I (DGAQA Yes, R&QA No): III/V are always required
+ *   (auto-forward runs after Part I approval; show steps even before that).
+ * Joint path with R&QA Yes still waits for Part II forward before III/V apply.
  */
 export function inspectionRequiresOrdqaPart5(ir: {
   so_involves_dgaqa?: unknown;
+  so_involves_rqa?: unknown;
   confirmations?: unknown;
   forwarded_to_ordaqa?: unknown;
 }): boolean {
-  return isForwardedToOrdqa(ir);
+  if (isForwardedToOrdqa(ir)) return true;
+  // ORDAQA-only: Parts III & V are the ORDAQA sections for this IR
+  if (dgaqaInvolvedInPart1(ir) && inspectionSkipsRqaPart2AndPart4(ir)) return true;
+  return false;
 }
 
 /** Team Head – QA final sign-off (Approve & Close) recorded. */
@@ -1401,8 +1426,16 @@ export function isUserAssignedPart2Inspector(
   return fromApi.some((i) => i?.id != null && Number(i.id) === userId);
 }
 
-/** Part II toggle: Team Head enabled Outstation Inspection. */
-export function isOutstationInspectionEnabled(ir: { part2_data?: unknown }): boolean {
+/** Part II Outstation Inspection — driven by Part I venue when known. */
+export function isOutstationInspectionEnabled(ir: {
+  part2_data?: unknown;
+  venue?: unknown;
+  location?: unknown;
+}): boolean {
+  const cat = part1VenueCategory(ir.venue, ir.location);
+  if (cat === 'Outstation') return true;
+  if (cat === 'Within CABS' || cat === 'Within Bangalore') return false;
+
   const v = parseJsonRecord(ir.part2_data).outstation_inspection;
   if (v === true || v === 1) return true;
   if (typeof v === 'string') {
@@ -1617,6 +1650,19 @@ export function canUserApprovePart4(
 }
 
 export function canUserRejectPart4(
+  ir: Parameters<typeof canUserApprovePart4>[0],
+  userId: number,
+  userRole?: string
+): boolean {
+  return canUserApprovePart4(ir, userId, userRole);
+}
+
+/**
+ * Team Head – QA (or admin) may permanently reject the IR while Part IV
+ * awaits their approval (same gate as Approve / Send back Part IV).
+ * Distinct from `reject_part4` (send back to inspector for revision).
+ */
+export function canUserQaRejectDuringPart4(
   ir: Parameters<typeof canUserApprovePart4>[0],
   userId: number,
   userRole?: string
@@ -2480,12 +2526,15 @@ export function resolveInspectionCustody(ir: {
   }
 
   // Part III — ORDAQA Head Section 23
-  if (needsOrdqa && forwarded && !section23) {
+  // DGAQA/ORDAQA-only: show as next step even before auto-forward flag is set
+  if (needsOrdqa && !section23 && (forwarded || !needsRqa)) {
     return {
       stage: 'Part III',
       role: 'ORDAQA Head',
       name: ordaqaHead,
-      action: 'Complete Section 23 (Assigned / Delegated)',
+      action: forwarded
+        ? 'Complete Section 23 (Assigned / Delegated)'
+        : 'Awaiting forward to ORDAQA, then complete Section 23',
     };
   }
 
@@ -2495,7 +2544,7 @@ export function resolveInspectionCustody(ir: {
       stage: 'Part IV',
       role: 'Team Head – QA',
       name: teamHead,
-      action: 'Approve or send back Part IV',
+      action: 'Approve, send back, or reject Part IV',
     };
   }
 

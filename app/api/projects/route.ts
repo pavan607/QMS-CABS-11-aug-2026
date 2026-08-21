@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { query } from '@/lib/db';
 
+async function ensureProgramDirectorColumn() {
+  await query(
+    `ALTER TABLE projects
+     ADD COLUMN IF NOT EXISTS program_director_id INTEGER REFERENCES users(id)`,
+    []
+  );
+}
+
+function parseProgramDirectorId(raw: unknown): number | null {
+  if (raw == null || raw === '' || raw === 'none') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const session = await auth();
@@ -9,17 +23,24 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    await ensureProgramDirectorColumn();
+
     const searchParams = request.nextUrl.searchParams;
     const search = searchParams.get('search');
     const status = searchParams.get('status');
 
     let sql = `
       SELECT p.*, u.name as created_by_name,
+        pgd.id as program_director_id,
+        pgd.name as program_director_name,
+        pgd.employee_id as program_director_employee_id,
+        pgd.designation as program_director_designation,
         (SELECT COUNT(*) FROM subsystems WHERE project_id = p.id) as subsystem_count,
         (SELECT COUNT(*) FROM lrus l JOIN subsystems s ON l.subsystem_id = s.id WHERE s.project_id = p.id) as lru_count,
         (SELECT COUNT(*) FROM srus sr JOIN lrus l2 ON sr.lru_id = l2.id JOIN subsystems s2 ON l2.subsystem_id = s2.id WHERE s2.project_id = p.id) as sru_count
       FROM projects p
       LEFT JOIN users u ON p.created_by = u.id
+      LEFT JOIN users pgd ON p.program_director_id = pgd.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -60,22 +81,26 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, code, description, status } = body;
+    const { name, code, description, status, program_director_id } = body;
 
     if (!name || !code) {
       return NextResponse.json({ error: 'Name and code are required' }, { status: 400 });
     }
+
+    await ensureProgramDirectorColumn();
 
     const existing = await query('SELECT id FROM projects WHERE code = $1', [code.toUpperCase()]);
     if (existing.rows.length > 0) {
       return NextResponse.json({ error: 'A project with this code already exists' }, { status: 400 });
     }
 
+    const pgdId = parseProgramDirectorId(program_director_id);
+
     const result = await query(
-      `INSERT INTO projects (name, code, description, status, created_by)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO projects (name, code, description, status, created_by, program_director_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, code.toUpperCase(), description || null, status || 'active', currentUser.rows[0].id]
+      [name, code.toUpperCase(), description || null, status || 'active', currentUser.rows[0].id, pgdId]
     );
 
     return NextResponse.json({ project: result.rows[0] }, { status: 201 });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { query } from '@/lib/db';
 import { R_QA_DEPARTMENT } from '@/lib/rqa-users';
+import { userOmitsDepartment } from '@/lib/user-roles';
 import bcrypt from 'bcryptjs';
 
 export async function GET(request: NextRequest) {
@@ -135,7 +136,11 @@ export async function POST(request: NextRequest) {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const departmentValue = designation === 'OS & Director' ? null : department || null;
+    const departmentValue = userOmitsDepartment(designation, role)
+      ? null
+      : department && department !== 'none'
+        ? department
+        : null;
 
     const result = await query(
       `INSERT INTO users (employee_id, email, name, password, role, designation, scientist_rank, department, reporting_to, status, contact_number)

@@ -7,12 +7,12 @@ export async function POST(request: NextRequest) {
     const { employee_id } = await request.json();
 
     if (!employee_id) {
-      return NextResponse.json({ inactive: false });
+      return NextResponse.json({ exists: false, inactive: false });
     }
 
     const id = normalizeEmployeeId(String(employee_id));
     if (!id) {
-      return NextResponse.json({ inactive: false });
+      return NextResponse.json({ exists: false, inactive: false });
     }
 
     const result = await query(
@@ -20,11 +20,14 @@ export async function POST(request: NextRequest) {
       [id]
     );
 
-    const isInactive = result.rows.length > 0 && result.rows[0].status !== 'active';
+    if (result.rows.length === 0) {
+      return NextResponse.json({ exists: false, inactive: false });
+    }
 
-    return NextResponse.json({ inactive: isInactive });
+    const isInactive = result.rows[0].status !== 'active';
+    return NextResponse.json({ exists: true, inactive: isInactive });
   } catch (error) {
     console.error('Error checking user status:', error);
-    return NextResponse.json({ inactive: false });
+    return NextResponse.json({ exists: false, inactive: false });
   }
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -76,6 +76,7 @@ import {
   canUserUpdatePart5,
   canUserApprovePart4,
   canUserRejectPart4,
+  canUserQaRejectDuringPart4,
   canUserTeamHeadEditPart4,
   part4PendingTeamHeadApproval,
   part4ApprovedByTeamHead,
@@ -110,6 +111,7 @@ import {
   inspectionSkipsPart2Part3,
   inspectionSkipsRqaPart2AndPart4,
   rqaInvolvedInPart1,
+  dgaqaInvolvedInPart1,
   inspectionUsesLegacyOpenRqaPart4,
   jointInspectionRequestedInPart1,
   canUserQaApproverApproveAndClose,
@@ -125,6 +127,8 @@ import {
   formatInspectionActivityDescription,
   resolveInspectionRejection,
   part1VenueIsOutstation,
+  resolveOutstationInspectionFromVenue,
+  isOutstationInspectionEnabled,
 } from '@/lib/inspection-display';
 import {
   parsePart1CertifierEditSummary,
@@ -479,7 +483,10 @@ interface InspectionRequest {
   inspection_date_to?: string;
   venue?: string;
   location?: string;
-  document_details?: Record<string, { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string }>;
+  document_details?: Record<
+    string,
+    { approved: string; doc_no: string; amd_no: string; rev_no: string; date: string; comment?: string }
+  >;
   confirmations?: Record<string, string>;
   designer_rep_name?: string;
   designer_rep_designation?: string;
@@ -635,6 +642,8 @@ export default function InspectionDetailPage() {
   const actionMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendBackDialogOpen, setSendBackDialogOpen] = useState(false);
   const [sendBackComment, setSendBackComment] = useState('');
+  const [requestRejectDialogOpen, setRequestRejectDialogOpen] = useState(false);
+  const [requestRejectReason, setRequestRejectReason] = useState('');
   const [forwardDialogOpen, setForwardDialogOpen] = useState(false);
   const [forwardComment, setForwardComment] = useState('');
   const [qaSendBackDialogOpen, setQaSendBackDialogOpen] = useState(false);
@@ -1476,13 +1485,16 @@ export default function InspectionDetailPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
-            <Label htmlFor="send-back-comment">Comment for initiator</Label>
+            <Label htmlFor="send-back-comment">
+              Comment for initiator <span className="text-destructive">*</span>
+            </Label>
             <Textarea
               id="send-back-comment"
               rows={4}
               placeholder="Describe what needs to be corrected or clarified..."
               value={sendBackComment}
               onChange={(e) => setSendBackComment(e.target.value)}
+              required
             />
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
@@ -1494,7 +1506,7 @@ export default function InspectionDetailPage() {
               onClick={async () => {
                 const trimmed = sendBackComment.trim();
                 if (!trimmed) {
-                  showMessage('error', 'Please enter a comment.');
+                  alert('Comment is mandatory');
                   return;
                 }
                 const ok = await handleWorkflowAction('request_send_back', { comments: trimmed });
@@ -1505,6 +1517,55 @@ export default function InspectionDetailPage() {
               }}
             >
               Send back
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={requestRejectDialogOpen} onOpenChange={setRequestRejectDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reject inspection request</DialogTitle>
+            <DialogDescription>
+              Permanently reject this IR. Enter a reason explaining the rejection.
+              The initiator and other stakeholders will be notified and can see this comment on the IR.
+              This cannot be undone from the workflow.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="request-reject-reason">
+              Reason for rejection <span className="text-destructive">*</span>
+            </Label>
+            <Textarea
+              id="request-reject-reason"
+              rows={4}
+              placeholder="Describe why this inspection request is being rejected..."
+              value={requestRejectReason}
+              onChange={(e) => setRequestRejectReason(e.target.value)}
+              required
+            />
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setRequestRejectDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={async () => {
+                const trimmed = requestRejectReason.trim();
+                if (!trimmed) {
+                  alert('Comment is mandatory');
+                  return;
+                }
+                const ok = await handleWorkflowAction('request_reject', { reason: trimmed });
+                if (ok) {
+                  setRequestRejectReason('');
+                  setRequestRejectDialogOpen(false);
+                }
+              }}
+            >
+              Reject
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1760,7 +1821,8 @@ export default function InspectionDetailPage() {
             <DialogTitle>Reject inspection request</DialogTitle>
             <DialogDescription>
               Permanently reject this IR as Team Head – QA. Enter comments explaining the rejection.
-              The initiator (and assigned inspector(s), if any) will be notified. This cannot be undone from the workflow.
+              All stakeholders involved in this inspection will be notified and can see this comment on the IR.
+              This cannot be undone from the workflow.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
@@ -1969,10 +2031,13 @@ export default function InspectionDetailPage() {
                 <RotateCcw className="mr-2 h-4 w-4" />
                 Send back
               </Button>
-              <Button variant="outline" onClick={() => {
-                const reason = prompt('Reason for rejection:');
-                if (reason) handleWorkflowAction('request_reject', { reason });
-              }}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRequestRejectReason('');
+                  setRequestRejectDialogOpen(true);
+                }}
+              >
                 <XCircle className="mr-2 h-4 w-4" />
                 Reject
               </Button>
@@ -1988,10 +2053,13 @@ export default function InspectionDetailPage() {
           {/* Employee 1021: after selected approver — Forward Request to QA Head */}
           {inspection.status === 'pending_part1_approval' && permissions.isPart1Approver() && (
             <>
-              <Button variant="outline" onClick={() => {
-                const reason = prompt('Reason for rejection:');
-                if (reason) handleWorkflowAction('request_reject', { reason });
-              }}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRequestRejectReason('');
+                  setRequestRejectDialogOpen(true);
+                }}
+              >
                 <XCircle className="mr-2 h-4 w-4" />
                 Reject
               </Button>
@@ -2203,7 +2271,7 @@ export default function InspectionDetailPage() {
               Approve Part V
             </Button>
           )}
-          {/* Team Head - QA: Approve / Send back Part IV */}
+          {/* Team Head - QA: Approve / Send back / Reject Part IV */}
           {canUserRejectPart4(inspection, permissions.userId, permissions.userRole) && (
             <Button
               variant="outline"
@@ -2215,6 +2283,19 @@ export default function InspectionDetailPage() {
             >
               <RotateCcw className="mr-2 h-4 w-4" />
               Send back
+            </Button>
+          )}
+          {canUserQaRejectDuringPart4(inspection, permissions.userId, permissions.userRole) && (
+            <Button
+              variant="outline"
+              className="border-red-300 text-red-800 hover:bg-red-50 dark:border-red-800 dark:text-red-200 dark:hover:bg-red-950/40"
+              onClick={() => {
+                setQaRejectReason('');
+                setQaRejectDialogOpen(true);
+              }}
+            >
+              <XCircle className="mr-2 h-4 w-4" />
+              Reject
             </Button>
           )}
           {canUserApprovePart4(inspection, permissions.userId, permissions.userRole) && (
@@ -2423,7 +2504,7 @@ export default function InspectionDetailPage() {
                 p4Done &&
                 (part4PendingTeamHeadApproval(inspection) || part4ApprovedByTeamHead(inspection));
               const part5Na = !needsOrdqa;
-              const steps: { key: string; done: boolean; na?: boolean }[] = [
+              const steps: { key: string; done: boolean; na?: boolean; rejected?: boolean }[] = [
                 // Tick once Part I is submitted to Request Approver (untick if returned to designer)
                 {
                   key: 'Part I',
@@ -2469,7 +2550,11 @@ export default function InspectionDetailPage() {
                       } as { key: string; done: boolean; na?: boolean },
                     ]
                   : []),
-                { key: 'Completed', done: inspection.status === 'completed' },
+                {
+                  key: inspection.status === 'rejected' ? 'Rejected' : 'Completed',
+                  done: inspection.status === 'completed' || inspection.status === 'rejected',
+                  rejected: inspection.status === 'rejected',
+                },
               ];
               return steps.map((step, i) => (
                 <div key={i} className="flex items-center gap-1.5">
@@ -2477,20 +2562,24 @@ export default function InspectionDetailPage() {
                     className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
                       step.na
                         ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border border-slate-300 dark:border-slate-600'
-                        : step.done
-                          ? 'bg-green-500 text-white'
-                          : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                        : step.rejected
+                          ? 'bg-red-500 text-white'
+                          : step.done
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
                     }`}
                   >
-                    {step.na ? '—' : step.done ? '✓' : i + 1}
+                    {step.na ? '—' : step.rejected ? '✕' : step.done ? '✓' : i + 1}
                   </div>
                   <span
                     className={
                       step.na
                         ? 'text-muted-foreground'
-                        : step.done
-                          ? 'text-green-700 dark:text-green-400 font-medium'
-                          : 'text-muted-foreground'
+                        : step.rejected
+                          ? 'text-red-700 dark:text-red-400 font-medium'
+                          : step.done
+                            ? 'text-green-700 dark:text-green-400 font-medium'
+                            : 'text-muted-foreground'
                     }
                   >
                     {step.key}
@@ -2537,12 +2626,41 @@ export default function InspectionDetailPage() {
 
       {/* Main Content */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1 h-auto">
+        {(() => {
+          const showPart2 = rqaInvolvedInPart1(inspection);
+          const showPart4 = rqaInvolvedInPart1(inspection);
+          const showPart3 =
+            inspectionRequiresOrdqaPart5(inspection) ||
+            dgaqaInvolvedInPart1(inspection) ||
+            isForwardedToOrdqa(inspection) ||
+            part3Section23HasSavedData(inspection) ||
+            memoReturnedAwaitingQaHead(inspection);
+          const showPart5 =
+            inspectionRequiresOrdqaPart5(inspection) ||
+            dgaqaInvolvedInPart1(inspection) ||
+            isForwardedToOrdqa(inspection);
+          const tabCount =
+            1 + // Part I
+            (showPart2 ? 1 : 0) +
+            (showPart3 ? 1 : 0) +
+            (showPart4 ? 1 : 0) +
+            (showPart5 ? 1 : 0) +
+            2; // Attachments + Activity
+          const colsClass =
+            tabCount <= 4
+              ? 'grid-cols-2 sm:grid-cols-4'
+              : tabCount <= 5
+                ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
+                : tabCount <= 6
+                  ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-6'
+                  : 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-7';
+          return (
+        <TabsList className={`grid w-full ${colsClass} gap-1 h-auto`}>
           <TabsTrigger value="overview">Part I</TabsTrigger>
-          <TabsTrigger value="part2">Part II</TabsTrigger>
-          <TabsTrigger value="part3">Part III</TabsTrigger>
-          <TabsTrigger value="part4">Part IV</TabsTrigger>
-          <TabsTrigger value="part5">Part V</TabsTrigger>
+          {showPart2 && <TabsTrigger value="part2">Part II</TabsTrigger>}
+          {showPart3 && <TabsTrigger value="part3">Part III</TabsTrigger>}
+          {showPart4 && <TabsTrigger value="part4">Part IV</TabsTrigger>}
+          {showPart5 && <TabsTrigger value="part5">Part V</TabsTrigger>}
           <TabsTrigger value="attachments">
             Attachments ({inspection.attachments.length})
           </TabsTrigger>
@@ -2550,6 +2668,8 @@ export default function InspectionDetailPage() {
             Activity ({inspection.activities.length})
           </TabsTrigger>
         </TabsList>
+          );
+        })()}
 
         <TabsContent value="overview" className="space-y-4">
           {/* IR Header */}
@@ -3008,10 +3128,12 @@ export default function InspectionDetailPage() {
                         const amdChanged = part1ChangesByKey.has(`document_details.${key}.amd_no`);
                         const revChanged = part1ChangesByKey.has(`document_details.${key}.rev_no`);
                         const dateChanged = part1ChangesByKey.has(`document_details.${key}.date`);
+                        const commentChanged = part1ChangesByKey.has(`document_details.${key}.comment`);
                         const cellHi = (changed: boolean) =>
                           changed ? 'bg-amber-100/90 dark:bg-amber-900/40 font-semibold ring-1 ring-inset ring-amber-300/70 dark:ring-amber-700/60' : '';
                         return (
-                        <tr key={key} className={rowChanged ? 'bg-amber-50/70 dark:bg-amber-950/25' : undefined}>
+                        <Fragment key={key}>
+                        <tr className={rowChanged ? 'bg-amber-50/70 dark:bg-amber-950/25' : undefined}>
                           <td className="px-4 py-2 font-medium">
                             {DOC_TYPE_LABELS[key] || key}
                             {rowChanged && (
@@ -3044,6 +3166,17 @@ export default function InspectionDetailPage() {
                             {doc.date != null && String(doc.date).trim() !== '' ? String(doc.date) : '—'}
                           </td>
                         </tr>
+                        {String(doc.approved || '').toLowerCase() === 'draft' && (
+                          <tr className={rowChanged ? 'bg-amber-50/70 dark:bg-amber-950/25' : 'bg-amber-50/40 dark:bg-amber-950/15'}>
+                            <td colSpan={6} className={`px-4 py-2 text-sm ${cellHi(commentChanged)}`}>
+                              <span className="font-medium text-muted-foreground">Comment: </span>
+                              {doc.comment != null && String(doc.comment).trim() !== ''
+                                ? String(doc.comment)
+                                : '—'}
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                         );
                       })}
                     </tbody>
@@ -3495,8 +3628,7 @@ export default function InspectionDetailPage() {
                     )}
 
                     {(() => {
-                      const p2 = parseJsonObj(inspection.part2_data);
-                      const outstationOn = !!p2.outstation_inspection;
+                      const outstationOn = isOutstationInspectionEnabled(inspection);
                       const isAssignedInsp =
                         isUserAssignedPart2Inspector(inspection, permissions.userId) ||
                         permissions.isAdmin();
@@ -3906,6 +4038,17 @@ export default function InspectionDetailPage() {
                               <RotateCcw className="mr-2 h-4 w-4" />
                               Send back
                             </Button>
+                            <Button
+                              variant="outline"
+                              className="border-red-300 text-red-800 hover:bg-red-50 dark:border-red-800 dark:text-red-200 dark:hover:bg-red-950/40"
+                              onClick={() => {
+                                setQaRejectReason('');
+                                setQaRejectDialogOpen(true);
+                              }}
+                            >
+                              <XCircle className="mr-2 h-4 w-4" />
+                              Reject
+                            </Button>
                             <Button onClick={() => handleWorkflowAction('approve_part4')}>
                               <CheckCircle className="mr-2 h-4 w-4" />
                               Approve Part IV
@@ -3919,7 +4062,7 @@ export default function InspectionDetailPage() {
                           <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2 mb-3">
                             <p className="text-sm font-medium text-foreground">Edit Part IV (Team Head – QA)</p>
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              Update the R&amp;QA inspection report, then Approve or Send back Part IV.
+                              Update the R&amp;QA inspection report, then Approve, Send back, or Reject Part IV.
                             </p>
                           </div>
                           <Part4Form
@@ -4103,8 +4246,9 @@ export default function InspectionDetailPage() {
                     <div className="text-center py-8 text-muted-foreground border rounded-lg">
                       <p className="font-medium">Part V — Not Applicable</p>
                       <p className="text-sm mt-1">
-                        This IR was not forwarded to ORDAQA. Assigned R&amp;QA Inspector fills Part IV;
-                        Part V applies only if QA Head enables Forward to ORDAQA in Part II.
+                        {dgaqaInvolvedInPart1(inspection)
+                          ? 'Part V opens after this IR is forwarded to ORDAQA (auto-forward after Part I approval when only DGAQA/ORDAQA is involved, or via Forward to ORDAQA in Part II).'
+                          : 'This IR was not forwarded to ORDAQA. Assigned R&QA Inspector fills Part IV; Part V applies only if QA Head enables Forward to ORDAQA in Part II.'}
                       </p>
                     </div>
                   );
@@ -5201,14 +5345,14 @@ function Part2Display({ inspection }: { inspection: InspectionRequest }) {
               <td className="px-4 py-2.5">
                 {!part2Submitted ? (
                   '—'
-                ) : d.outstation_inspection ? (
+                ) : isOutstationInspectionEnabled(inspection) ? (
                   <Badge className="bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">Yes</Badge>
                 ) : (
                   'No'
                 )}
               </td>
             </tr>
-            {!!d.outstation_inspection && (
+            {isOutstationInspectionEnabled(inspection) && (
               <tr>
                 <td className="bg-muted/50 px-4 py-2.5 font-medium">Email Sent</td>
                 <td className="px-4 py-2.5">
@@ -5283,6 +5427,20 @@ function Part2Step1Form({
   const [saveMsg, setSaveMsg] = useState('');
   const [forwardSuccessOpen, setForwardSuccessOpen] = useState(false);
   const [forwardSuccessName, setForwardSuccessName] = useState('');
+  /** Prevents auto-refresh from wiping unsaved Part II edits (e.g. Forward to ORDAQA toggle). */
+  const formDirtyRef = useRef(false);
+  const part2DataSyncKey = (() => {
+    try {
+      return JSON.stringify(inspection?.part2_data ?? null);
+    } catch {
+      return '';
+    }
+  })();
+
+  const patchForm = (patch: Partial<typeof form> | ((prev: typeof form) => typeof form)) => {
+    formDirtyRef.current = true;
+    setForm((prev) => (typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }));
+  };
 
   useEffect(() => {
     const q = new URLSearchParams({
@@ -5298,7 +5456,13 @@ function Part2Step1Form({
   }, []);
 
   useEffect(() => {
+    formDirtyRef.current = false;
+  }, [inspection?.id]);
+
+  useEffect(() => {
     if (!inspection) return;
+    // Keep local edits while the page polls / refreshes the IR in the background.
+    if (formDirtyRef.current) return;
     const d = parseJsonObj(inspection.part2_data);
     setForm({
       head_rqa_comments: (inspection.part2_notes as string) || String(d.head_rqa_comments || ''),
@@ -5313,7 +5477,7 @@ function Part2Step1Form({
     });
   }, [
     inspection?.id,
-    inspection?.part2_data,
+    part2DataSyncKey,
     inspection?.nominated_team_head_id,
     inspection?.forwarded_to_ordaqa,
     inspection?.part2_notes,
@@ -5375,6 +5539,7 @@ function Part2Step1Form({
       });
       const data = await res.json();
       if (res.ok) {
+        formDirtyRef.current = false;
         await onComplete();
         if (returnChoice === 'yes') {
           setSaveMsg(data.message || 'Returned to designer');
@@ -5443,8 +5608,16 @@ function Part2Step1Form({
       )}
       <h4 className="font-semibold text-sm text-muted-foreground">22. Head R&QA Comments</h4>
       <div className="space-y-2">
-        <Label>Comments</Label>
-        <Textarea rows={3} value={form.head_rqa_comments} onChange={e => setForm({...form, head_rqa_comments: e.target.value})} placeholder="Head R&QA comments on the inspection request..." />
+        <Label>
+          Comments
+          {form.return_to_designer === 'yes' ? <span className="text-destructive"> *</span> : null}
+        </Label>
+        <Textarea rows={3} value={form.head_rqa_comments} onChange={e => patchForm({ head_rqa_comments: e.target.value })} placeholder="Head R&QA comments on the inspection request..." />
+        {form.return_to_designer === 'yes' && !form.head_rqa_comments.trim() && (
+          <p className="text-xs text-muted-foreground">
+            Comment is required to return the inspection request to the designer.
+          </p>
+        )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="space-y-2">
@@ -5453,7 +5626,7 @@ function Part2Step1Form({
             value={form.return_to_designer}
             onChange={e => {
               const v = e.target.value;
-              setForm(prev => ({
+              patchForm(prev => ({
                 ...prev,
                 return_to_designer: v,
                 ...(v === 'yes' ? { forward_to_dgaqa: false } : memoResubmit ? { forward_to_dgaqa: true } : {}),
@@ -5485,7 +5658,7 @@ function Part2Step1Form({
                   : form.forward_to_dgaqa
               }
               disabled={disableForwardToOrdqa || form.return_to_designer === 'yes'}
-              onCheckedChange={v => setForm({ ...form, forward_to_dgaqa: v })}
+              onCheckedChange={v => patchForm({ forward_to_dgaqa: v })}
               className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
             />
             <Label className={form.return_to_designer === 'yes' || disableForwardToOrdqa ? 'text-muted-foreground cursor-not-allowed' : ''}>
@@ -5521,7 +5694,7 @@ function Part2Step1Form({
           </Label>
           <select
             value={form.nominated_team_head_id}
-            onChange={e => setForm({ ...form, nominated_team_head_id: e.target.value })}
+            onChange={e => patchForm({ nominated_team_head_id: e.target.value })}
             className={sel}
             disabled={lockTeamHeadSelection}
           >
@@ -5597,9 +5770,14 @@ function Part2Step2Form({
     inspection.venue,
     inspection.location
   );
+  const outstationLockedOn = resolveOutstationInspectionFromVenue(
+    inspection.venue,
+    inspection.location,
+    !!d.outstation_inspection
+  );
   const [agencyForm, setAgencyForm] = useState({
     third_party_agency: String(d.third_party_agency || ''),
-    outstation_inspection: venueRequiresOutstation || !!d.outstation_inspection,
+    outstation_inspection: outstationLockedOn,
     team_head_comments: String(d.team_head_comments || ''),
   });
 
@@ -5632,13 +5810,14 @@ function Part2Step2Form({
     // Only hydrate from server when opening this IR — do not reset on poll/refresh
     // (otherwise Outstation Inspection toggles off before Save).
     const p2 = parseJsonObj(inspection.part2_data);
-    const venueRequiresOutstation = part1VenueIsOutstation(
+    const outstationOn = resolveOutstationInspectionFromVenue(
       inspection.venue,
-      inspection.location
+      inspection.location,
+      !!p2.outstation_inspection
     );
     setAgencyForm({
       third_party_agency: String(p2.third_party_agency || ''),
-      outstation_inspection: venueRequiresOutstation || !!p2.outstation_inspection,
+      outstation_inspection: outstationOn,
       team_head_comments: String(p2.team_head_comments || ''),
     });
     setFieldErrors({});
@@ -5691,6 +5870,11 @@ function Part2Step2Form({
     setSaveMsg('');
     setFieldErrors({});
     try {
+      const outstationOn = resolveOutstationInspectionFromVenue(
+        inspection.venue,
+        inspection.location,
+        false
+      );
       const res = await fetch(`/api/inspection-requests/${inspection.id}/workflow`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5699,9 +5883,7 @@ function Part2Step2Form({
           inspector_ids: selectedInspectors,
           part2_data: {
             third_party_agency: agencyForm.third_party_agency,
-            outstation_inspection:
-              part1VenueIsOutstation(inspection.venue, inspection.location) ||
-              agencyForm.outstation_inspection,
+            outstation_inspection: outstationOn,
             team_head_comments: agencyForm.team_head_comments.trim(),
           },
         }),
@@ -5734,7 +5916,8 @@ function Part2Step2Form({
       <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
         <p className="text-sm font-medium text-foreground">Team Head – QA (after QA Head Part II)</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Add your comments, enable Outstation if needed, then assign inspector(s). Email Sent / Name &amp; Sign / Date &amp; Time are filled by the R&amp;QA Inspector.
+          Add your comments and assign inspector(s). Outstation Inspection is set automatically from Part I venue.
+          When enabled, Email Sent / Name &amp; Sign / Date &amp; Time are filled by the R&amp;QA Inspector.
         </p>
       </div>
       <div className="space-y-2">
@@ -5750,7 +5933,7 @@ function Part2Step2Form({
       <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
         <p className="text-sm font-medium text-foreground">Third party / outstation — Part II (R&amp;QA Team Head)</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Fill third-party agency and turn on Outstation Inspection if applicable.
+          Fill third-party agency if applicable. Outstation Inspection follows Part I venue (Within CABS / Within Bangalore = Off, Outstation = On).
         </p>
       </div>
       <div className="space-y-2">
@@ -5763,32 +5946,25 @@ function Part2Step2Form({
       </div>
       <div className="flex items-center gap-3">
         <Switch
-          checked={venueRequiresOutstation || agencyForm.outstation_inspection}
-          disabled={venueRequiresOutstation}
+          checked={agencyForm.outstation_inspection}
+          disabled
           title={
             venueRequiresOutstation
-              ? 'Locked on because Part I venue is Outstation'
-              : 'Can be turned on or off for Within CABS / Within Bangalore'
+              ? 'Automatically on because Part I venue is Outstation'
+              : 'Automatically off because Part I venue is Within CABS or Within Bangalore'
           }
-          onCheckedChange={(v) => {
-            if (venueRequiresOutstation) return;
-            setAgencyForm((prev) => ({
-              ...prev,
-              outstation_inspection: v,
-            }));
-          }}
           className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
         />
         <div>
           <Label>Outstation Inspection</Label>
-          {venueRequiresOutstation && (
-            <p className="text-xs text-muted-foreground">
-              On because Part I venue is Outstation.
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground">
+            {venueRequiresOutstation
+              ? 'On automatically — Part I venue is Outstation. R&QA Inspector fills Email Sent, Name & Sign, and Date & Time.'
+              : 'Off automatically — Part I venue is Within CABS or Within Bangalore.'}
+          </p>
         </div>
       </div>
-      {(venueRequiresOutstation || agencyForm.outstation_inspection) && (
+      {agencyForm.outstation_inspection && (
         <div className="rounded-md border border-blue-200 bg-blue-50/80 px-3 py-2 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
           <p className="font-medium">Outstation enabled</p>
           <p className="text-xs mt-0.5 text-blue-900/80 dark:text-blue-200/90">
@@ -5860,9 +6036,9 @@ function Part2Step2Form({
       <Button onClick={handleSubmit} disabled={loading || selectedInspectors.length === 0} className="mt-4">
         {loading
           ? 'Saving...'
-          : mode === 'edit'
-            ? `Save Inspector Assignment (${selectedInspectors.length})`
-            : `Complete Part II — Assign ${selectedInspectors.length} Inspector(s)`}
+          : agencyForm.outstation_inspection
+            ? 'Forward to R&QA Inspector'
+            : 'Forward to ORDAQA Head'}
       </Button>
     </div>
   );
@@ -5988,7 +6164,7 @@ function Part2InspectorOutstationForm({
       <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-2">
         <p className="text-sm font-medium text-foreground">Outstation details — R&amp;QA Inspector</p>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Team Head – QA enabled Outstation Inspection. Fill Email Sent, Name &amp; Sign, and Date &amp; Time.
+          Part I venue is Outstation, so Outstation Inspection is enabled. Fill Email Sent, Name &amp; Sign, and Date &amp; Time.
         </p>
       </div>
       {saveMsg && (
@@ -6676,11 +6852,13 @@ function Part3AssignForm({
         <Label>Name of Oi/c ORDAQA CABS Cell</Label>
         <Input
           value={form.oic_ordaqa_name}
-          onChange={(e) => setForm({ ...form, oic_ordaqa_name: e.target.value })}
+          readOnly
+          disabled
+          className="bg-muted text-muted-foreground"
           placeholder={loggedInOicName || 'Oi/c name...'}
         />
         <p className="text-xs text-muted-foreground">
-          Defaults from your profile name; you can edit if needed.
+          Auto-filled from your profile name (read-only).
         </p>
       </div>
 
@@ -6690,13 +6868,19 @@ function Part3AssignForm({
         disabled={loading || !canSubmit}
         className="mt-1 bg-black text-white hover:bg-black/90 dark:bg-black dark:text-white dark:hover:bg-black/90"
       >
-        {loading
-          ? 'Saving...'
-          : memoReturnYes
-            ? 'Save & Return to QA Head'
-            : alreadySaved
-              ? 'Save Section 23 updates'
-              : 'Save Section 23 & Assign'}
+        {(() => {
+          if (loading) return 'Saving...';
+          if (memoReturnYes) return 'Save & Return to QA Head';
+          // Assigned → ORDAQA Inspector; Delegated → Part II R&QA Inspector
+          if (delegationType === 'delegated') return 'Forward to R&QA Inspector';
+          if (delegationType === 'assigned') return 'Forward to ORDAQA Inspector';
+          // Before choice: Part I ORDAQA Yes → ORDAQA; Part II forward + R&QA Yes → R&QA
+          if (dgaqaInvolvedInPart1(inspection)) return 'Forward to ORDAQA Inspector';
+          if (isForwardedToOrdqa(inspection) && rqaInvolvedInPart1(inspection)) {
+            return 'Forward to R&QA Inspector';
+          }
+          return alreadySaved ? 'Forward to R&QA Inspector' : 'Save Section 23 & Assign';
+        })()}
       </Button>
     </div>
   );
@@ -6938,7 +7122,16 @@ function Part5Form({
         </div>
         <div className="space-y-2">
           <Label>ORDAQA Rep (in case of delegation to R&QA)</Label>
-          <Input value={form.dgaqa_rep} onChange={e => setForm({...form, dgaqa_rep: e.target.value})} placeholder="ORDAQA representative..." />
+          <Input
+            value={form.dgaqa_rep}
+            readOnly
+            className="bg-muted/40 cursor-default"
+            title="Filled from Part III delegation — not editable"
+            placeholder="—"
+          />
+          <p className="text-xs text-muted-foreground">
+            Read-only: set from Part III (Delegated shows fixed label; otherwise from prior Part V entry).
+          </p>
         </div>
       </div>
 

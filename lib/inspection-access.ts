@@ -34,8 +34,10 @@ export function employeeHasGlobalInspectionAccess(employeeId?: string | null): b
 
 export function userHasGlobalInspectionAccess(
   role: string,
-  employeeId?: string | null
+  employeeId?: string | null,
+  designation?: string | null
 ): boolean {
+  if (isProjectDirectorUser(role, designation)) return true;
   return roleHasGlobalInspectionAccess(role) || employeeHasGlobalInspectionAccess(employeeId);
 }
 
@@ -104,6 +106,7 @@ export { collectInspectorIds, parseInspectorIds } from '@/lib/inspector-ids';
 export type InspectionRequestScopeRow = {
   id?: number | null;
   status?: string | null;
+  project_id?: number | null;
   initiator_id?: number | null;
   inspector_id?: number | null;
   inspector_ids?: string | null;
@@ -247,10 +250,74 @@ export function roleHasGlobalInspectionAccess(role: string): boolean {
   return (
     role === 'administrator' ||
     role === 'os_director' ||
-    role === 'program_director' ||
     role === 'project_director' ||
     role === 'os' ||
     role === 'director'
+  );
+}
+
+/** Project Director (system role or designation PD) — sees all inspection requests. */
+export function isProjectDirectorUser(
+  role?: string | null,
+  designation?: string | null
+): boolean {
+  const r = String(role || '').trim().toLowerCase();
+  if (r === 'project_director') return true;
+  return String(designation || '').trim().toUpperCase() === 'PD';
+}
+
+/** Program Director (system role or designation PGD) — sees only their programme projects. */
+export function isProgramDirectorUser(
+  role?: string | null,
+  designation?: string | null
+): boolean {
+  // PD sees everything — do not treat as programme-scoped PGD.
+  if (isProjectDirectorUser(role, designation)) return false;
+  const r = String(role || '').trim().toLowerCase();
+  if (r === 'program_director') return true;
+  return String(designation || '').trim().toUpperCase() === 'PGD';
+}
+
+/**
+ * IRs whose project is linked to this user as Program Director (PGD).
+ * Requires `projects.program_director_id`.
+ */
+export function sqlProgramDirectorVisibleCondition(
+  irAlias: string,
+  userIdPlaceholder: string
+): string {
+  return `EXISTS (
+    SELECT 1 FROM projects p
+    WHERE p.id = ${irAlias}.project_id
+      AND p.program_director_id = ${userIdPlaceholder}
+  )`;
+}
+
+export async function userOwnsIrProgrammeAsPgd(
+  userId: number,
+  ir: { project_id?: number | null }
+): Promise<boolean> {
+  const projectId = ir.project_id != null ? Number(ir.project_id) : NaN;
+  if (!Number.isFinite(projectId) || projectId < 1) return false;
+  try {
+    await ensureProjectsProgramDirectorColumn();
+    const res = await query(
+      `SELECT 1 FROM projects
+       WHERE id = $1 AND program_director_id = $2
+       LIMIT 1`,
+      [projectId, userId]
+    );
+    return res.rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureProjectsProgramDirectorColumn(): Promise<void> {
+  await query(
+    `ALTER TABLE projects
+     ADD COLUMN IF NOT EXISTS program_director_id INTEGER REFERENCES users(id)`,
+    []
   );
 }
 
@@ -336,6 +403,8 @@ export function sqlInspectionScopeCondition(
   userIdPlaceholder: string
 ): string | null {
   switch (role) {
+    case 'program_director':
+      return sqlProgramDirectorVisibleCondition(irAlias, userIdPlaceholder);
     case 'initiator':
       // Own IRs, or IRs where this user is nominated field-21 certifier (e.g. DH + Initiator/Designer)
       return `(
@@ -402,7 +471,7 @@ export async function userCanAccessInspectionRequest(
   designation?: string | null
 ): Promise<boolean> {
   if (!Number.isFinite(userId) || userId < 1) return false;
-  if (userHasGlobalInspectionAccess(role, employeeId)) return true;
+  if (userHasGlobalInspectionAccess(role, employeeId, designation)) return true;
 
   // Part I Approver (1021): see IRs from Part I queue onward, including rejected /
   // returned-to-designer after they have already forwarded Part I.
@@ -437,6 +506,10 @@ export async function userCanAccessInspectionRequest(
       return true;
     }
     return false;
+  }
+
+  if (isProgramDirectorUser(role, designation)) {
+    return userOwnsIrProgrammeAsPgd(userId, ir);
   }
 
   if (role === 'qa_head') return irVisibleToQaHead(ir);

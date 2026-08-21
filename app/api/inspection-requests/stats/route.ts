@@ -10,6 +10,9 @@ import {
   employeeIsPart1Approver,
   sqlPart1ApproverVisibleCondition,
   resolvePart1ApproverUser,
+  isProgramDirectorUser,
+  sqlProgramDirectorVisibleCondition,
+  ensureProjectsProgramDirectorColumn,
 } from '@/lib/inspection-access';
 import { normalizeSystemRole } from '@/lib/user-roles';
 import { canUserUpdatePart4, canUserFillPart2OutstationDetails, userHasPart5ActionRequired } from '@/lib/inspection-display';
@@ -26,8 +29,9 @@ export async function GET(request: NextRequest) {
     const userId = parseInt((session.user as any).id);
     const employeeId = (session.user as any).employee_id as string | undefined;
     const designation = (session.user as any).designation as string | undefined;
-    const hasGlobalInspectionScope = userHasGlobalInspectionAccess(userRole, employeeId);
+    const hasGlobalInspectionScope = userHasGlobalInspectionAccess(userRole, employeeId, designation);
     const isGroupLead = isGroupOversightDesignation(designation);
+    const isPgd = isProgramDirectorUser(userRole, designation);
     let isPart1Approver = employeeIsPart1Approver(employeeId);
     if (!isPart1Approver) {
       const part1User = await resolvePart1ApproverUser();
@@ -37,8 +41,15 @@ export async function GET(request: NextRequest) {
     let baseFilter = '';
     const params: any[] = [];
 
+    if (isPgd) {
+      await ensureProjectsProgramDirectorColumn();
+    }
+
     if (!hasGlobalInspectionScope) {
-      if (isPart1Approver) {
+      if (isPgd) {
+        baseFilter = `WHERE ${sqlProgramDirectorVisibleCondition('ir', '$1')}`;
+        params.push(userId);
+      } else if (isPart1Approver) {
         baseFilter = `WHERE ${sqlPart1ApproverVisibleCondition('ir', '$1')}`;
         params.push(userId);
       } else if (userRole === 'request_approver' || isGroupLead) {
@@ -239,7 +250,7 @@ export async function GET(request: NextRequest) {
         userHasPart5ActionRequired(ir, userId, 'inspector')
       ).length;
       const outstationCandidates = await query(
-        `SELECT status, part2_data, inspector_id, inspector_ids
+        `SELECT status, part2_data, inspector_id, inspector_ids, venue, location
          FROM inspection_requests
          WHERE status IN ('assigned', 'in_progress')
            AND (
@@ -387,10 +398,17 @@ export async function GET(request: NextRequest) {
         needs_assignment: parseInt(pendingFinalRes.rows[0]?.count || 0),
       };
     } else if (userRole === 'ordaqa_head') {
-      // Part III only after Outstation details are complete (when Outstation was enabled)
+      // Part III only after Outstation details are complete (when Outstation was enabled by Part I venue)
       const outstationReady = `
            AND NOT (
-             COALESCE(part2_data::jsonb ->> 'outstation_inspection', '') IN ('true', 't', '1', 'yes')
+             (
+               COALESCE(venue, location, '') ILIKE 'Outstation%'
+               OR (
+                 COALESCE(venue, location, '') NOT ILIKE 'Within CABS%'
+                 AND COALESCE(venue, location, '') NOT ILIKE 'Within Bangalore%'
+                 AND COALESCE(part2_data::jsonb ->> 'outstation_inspection', '') IN ('true', 't', '1', 'yes')
+               )
+             )
              AND (
                LOWER(TRIM(COALESCE(part2_data::jsonb ->> 'email_sent', ''))) NOT IN ('yes', 'no')
                OR TRIM(COALESCE(part2_data::jsonb ->> 'email_sent_by', '')) = ''
@@ -447,11 +465,7 @@ export async function GET(request: NextRequest) {
         needs_assignment: parseInt(pendingPart5Res.rows[0]?.count || 0),
         active_ordaqa: parseInt(activeOrdaqaRes.rows[0]?.count || 0),
       };
-    } else if (
-      userRole === 'os_director' ||
-      userRole === 'program_director' ||
-      userRole === 'project_director'
-    ) {
+    } else if (userRole === 'os_director' || userRole === 'project_director') {
       const pendingApprovalRes = await query(
         `SELECT COUNT(*) as count FROM inspection_requests
          WHERE status IN ('pending_request_approval', 'pending')`,
@@ -463,6 +477,26 @@ export async function GET(request: NextRequest) {
            AND inspector_id IS NULL
            AND (inspector_ids IS NULL OR inspector_ids::jsonb = '[]'::jsonb)`,
         []
+      );
+      actionItems = {
+        pending_approval: parseInt(pendingApprovalRes.rows[0]?.count || 0),
+        needs_assignment: parseInt(needsAssignmentRes.rows[0]?.count || 0),
+      };
+    } else if (isPgd || userRole === 'program_director') {
+      await ensureProjectsProgramDirectorColumn();
+      const pendingApprovalRes = await query(
+        `SELECT COUNT(*) as count FROM inspection_requests ir
+         WHERE ${sqlProgramDirectorVisibleCondition('ir', '$1')}
+           AND ir.status IN ('pending_request_approval', 'pending')`,
+        [userId]
+      );
+      const needsAssignmentRes = await query(
+        `SELECT COUNT(*) as count FROM inspection_requests ir
+         WHERE ${sqlProgramDirectorVisibleCondition('ir', '$1')}
+           AND ir.status = 'request_approved'
+           AND ir.inspector_id IS NULL
+           AND (ir.inspector_ids IS NULL OR ir.inspector_ids::jsonb = '[]'::jsonb)`,
+        [userId]
       );
       actionItems = {
         pending_approval: parseInt(pendingApprovalRes.rows[0]?.count || 0),

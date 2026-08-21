@@ -22,7 +22,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { usePermissions } from '@/lib/hooks/usePermissions';
-import { SYSTEM_ROLE_OPTIONS } from '@/lib/user-roles';
+import { SYSTEM_ROLE_OPTIONS, userOmitsDepartment, departmentIsOptional } from '@/lib/user-roles';
 import { cn } from '@/lib/utils';
 
 interface User {
@@ -54,8 +54,8 @@ const DEPARTMENTS = [
 
 const DESIGNATIONS = [
   { value: 'OS & Director', label: 'OS & Director', icon: Building2 },
-  { value: 'PGD', label: 'Program Director (PGD)', icon: Crown },
   { value: 'PD', label: 'Project Director (PD)', icon: Crown },
+  { value: 'PGD', label: 'Program Director (PGD)', icon: Crown },
   { value: 'GD', label: 'Group Director (GD)', icon: Crown },
   { value: 'DGD', label: 'Deputy Group Director (DGD)', icon: Shield },
   { value: 'DH', label: 'Division Head (DH)', icon: UserCog },
@@ -89,10 +89,8 @@ const DESIGNATION_ICON_COLORS: Record<string, string> = {
 };
 
 /** Stored designation value — principal has no department. */
-const OS_DIRECTOR_DESIGNATION = 'OS & Director';
-
-function formatUserDepartmentCell(designation: string, department: string) {
-  if (designation === OS_DIRECTOR_DESIGNATION) {
+function formatUserDepartmentCell(designation: string, department: string, role?: string) {
+  if (userOmitsDepartment(designation, role)) {
     return (
       <span className="text-sm text-muted-foreground italic" title="Principal — not assigned to a department">
         —
@@ -399,7 +397,7 @@ export default function UsersPage() {
       role: user.role,
       designation: des,
       scientist_rank: user.scientist_rank || '',
-      department: des === OS_DIRECTOR_DESIGNATION ? '' : user.department || '',
+      department: userOmitsDepartment(des, user.role) ? '' : user.department || '',
       reporting_to: user.reporting_to ? String(user.reporting_to) : '',
       status: user.status,
       contact_number: user.contact_number || '',
@@ -446,7 +444,9 @@ export default function UsersPage() {
         email: emailNorm,
         reporting_to: formData.reporting_to ? parseInt(formData.reporting_to) : null,
       };
-      if (formData.designation === OS_DIRECTOR_DESIGNATION) {
+      if (userOmitsDepartment(formData.designation, formData.role)) {
+        payload.department = null;
+      } else if (!formData.department || formData.department === 'none') {
         payload.department = null;
       }
       if (isEdit && !formData.password) delete payload.password;
@@ -567,7 +567,7 @@ export default function UsersPage() {
           <TableCell>
             <span className="text-sm">{user.scientist_rank || '--'}</span>
           </TableCell>
-          <TableCell>{formatUserDepartmentCell(user.designation, user.department)}</TableCell>
+          <TableCell>{formatUserDepartmentCell(user.designation, user.department, user.role)}</TableCell>
           <TableCell>
             <Badge
               variant={user.status === 'active' ? 'default' : 'secondary'}
@@ -767,7 +767,7 @@ export default function UsersPage() {
                       <TableCell><span className="font-mono text-sm font-medium">{user.employee_id}</span></TableCell>
                       <TableCell>{getDesignationBadge(user.designation)}</TableCell>
                       <TableCell>{user.scientist_rank || '--'}</TableCell>
-                      <TableCell>{formatUserDepartmentCell(user.designation, user.department)}</TableCell>
+                      <TableCell>{formatUserDepartmentCell(user.designation, user.department, user.role)}</TableCell>
                       <TableCell>
                         {user.reporting_to_name
                           ? <span className="text-sm">{user.reporting_to_employee_id} - {user.reporting_to_name}</span>
@@ -941,7 +941,7 @@ export default function UsersPage() {
                       setFormData({
                         ...formData,
                         designation: v,
-                        ...(v === OS_DIRECTOR_DESIGNATION ? { department: '' } : {}),
+                        ...(userOmitsDepartment(v, formData.role) ? { department: '' } : {}),
                       })
                     }
                   >
@@ -962,7 +962,7 @@ export default function UsersPage() {
                   />
                 </div>
               </div>
-              {formData.designation === OS_DIRECTOR_DESIGNATION ? (
+              {userOmitsDepartment(formData.designation, formData.role) ? (
                 <div className="rounded-md border border-dashed bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
                   <span className="font-medium text-foreground">Department</span>
                   <p className="mt-1 text-xs leading-relaxed">
@@ -971,21 +971,49 @@ export default function UsersPage() {
                 </div>
               ) : (
                 <div className="grid gap-2">
-                  <Label>Department *</Label>
-                  <Select value={formData.department} onValueChange={(v) => setFormData({ ...formData, department: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select department..." /></SelectTrigger>
+                  <Label>
+                    Department{departmentIsOptional(formData.designation, formData.role) ? '' : ' *'}
+                  </Label>
+                  <Select
+                    value={formData.department || undefined}
+                    onValueChange={(v) =>
+                      setFormData({ ...formData, department: v === 'none' ? '' : v })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={
+                        departmentIsOptional(formData.designation, formData.role)
+                          ? 'Select department (optional)...'
+                          : 'Select department...'
+                      } />
+                    </SelectTrigger>
                     <SelectContent>
+                      {departmentIsOptional(formData.designation, formData.role) && (
+                        <SelectItem value="none">None</SelectItem>
+                      )}
                       {DEPARTMENTS.map(d => (
                         <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {departmentIsOptional(formData.designation, formData.role) && (
+                    <p className="text-xs text-muted-foreground">Optional for Program Director / Project Director.</p>
+                  )}
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
                   <Label>System Role *</Label>
-                  <Select value={formData.role} onValueChange={(v) => setFormData({ ...formData, role: v })}>
+                  <Select
+                    value={formData.role}
+                    onValueChange={(v) =>
+                      setFormData({
+                        ...formData,
+                        role: v,
+                        ...(userOmitsDepartment(formData.designation, v) ? { department: '' } : {}),
+                      })
+                    }
+                  >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {SYSTEM_ROLE_OPTIONS.map((r) => (

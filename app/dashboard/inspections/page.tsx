@@ -9,6 +9,11 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { usePermissions } from '@/lib/hooks/usePermissions';
 import { canUserUpdatePart4, canUserApprovePart4, canUserApproveOrdqaPart5, canUserFillPart2OutstationDetails, inspectionSkipsPart2Part3, memoReturnedAwaitingQaHead, ordaqaHeadPart3ActionRequired, ordaqaHeadReforwardActionRequired, resolveInspectionCustody, formatInspectionCustodyLine, formatCalendarDateDisplay, teamHeadQaNeedsInspectorAssignment, inspectionReadyForFinalTeamHeadApproval, userHasPart5ActionRequired, resolveInspectionRejection } from '@/lib/inspection-display';
+import {
+  resolveInspectorNames,
+  resolveStartCompleteInspectorName,
+  shouldHighlightInspectorName,
+} from '@/lib/report-inspector-display';
 import { 
   Plus, Search, FileText,
   Calendar, MapPin, User, Paperclip, AlertCircle, Edit,
@@ -57,6 +62,8 @@ interface InspectionRequest {
   part2_data?: unknown;
   part3_data?: unknown;
   part4_data?: unknown;
+  part4_completed_by?: number | null;
+  part4_completed_by_name?: string | null;
   has_memo_return_activity?: boolean | null;
   attachment_count: number;
   created_at: string;
@@ -519,8 +526,38 @@ function InspectionsContent() {
                           </div>
                           
                           <div className="flex items-center gap-2">
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            <span>{request.inspector_names || request.inspector_name || 'Unassigned'}</span>
+                            <User className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+                              {(() => {
+                                const names = resolveInspectorNames(request);
+                                if (names.length === 0) {
+                                  return <span className="text-muted-foreground">Unassigned</span>;
+                                }
+                                const startComplete = resolveStartCompleteInspectorName(request);
+                                return names.map((name, index) => {
+                                  const highlighted = shouldHighlightInspectorName(
+                                    name,
+                                    request,
+                                    startComplete
+                                  );
+                                  return (
+                                    <span key={`${request.id}-${name}-${index}`}>
+                                      {index > 0 && ', '}
+                                      {highlighted ? (
+                                        <span
+                                          className="font-semibold text-emerald-800 bg-emerald-100 dark:text-emerald-200 dark:bg-emerald-900/50 px-1.5 py-0.5 rounded"
+                                          title="Completed Part IV — R&QA Inspection"
+                                        >
+                                          {name}
+                                        </span>
+                                      ) : (
+                                        name
+                                      )}
+                                    </span>
+                                  );
+                                });
+                              })()}
+                            </span>
                           </div>
                           
                           <div className="flex items-center gap-2">

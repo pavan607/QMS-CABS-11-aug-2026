@@ -14,10 +14,21 @@ export async function GET(
 
     const { id } = await params;
 
+    await query(
+      `ALTER TABLE projects
+       ADD COLUMN IF NOT EXISTS program_director_id INTEGER REFERENCES users(id)`,
+      []
+    );
+
     const result = await query(
-      `SELECT p.*, u.name as created_by_name
+      `SELECT p.*, u.name as created_by_name,
+              pgd.id as program_director_id,
+              pgd.name as program_director_name,
+              pgd.employee_id as program_director_employee_id,
+              pgd.designation as program_director_designation
        FROM projects p
        LEFT JOIN users u ON p.created_by = u.id
+       LEFT JOIN users pgd ON p.program_director_id = pgd.id
        WHERE p.id = $1`,
       [id]
     );
@@ -72,21 +83,33 @@ export async function PUT(
 
     const { id } = await params;
     const body = await request.json();
-    const { name, code, description, status } = body;
+    const { name, code, description, status, program_director_id } = body;
 
     if (!name || !code) {
       return NextResponse.json({ error: 'Name and code are required' }, { status: 400 });
     }
+
+    await query(
+      `ALTER TABLE projects
+       ADD COLUMN IF NOT EXISTS program_director_id INTEGER REFERENCES users(id)`,
+      []
+    );
 
     const duplicate = await query('SELECT id FROM projects WHERE code = $1 AND id != $2', [code.toUpperCase(), id]);
     if (duplicate.rows.length > 0) {
       return NextResponse.json({ error: 'A project with this code already exists' }, { status: 400 });
     }
 
+    const pgdId =
+      program_director_id == null || program_director_id === '' || program_director_id === 'none'
+        ? null
+        : Number(program_director_id);
+    const pgdValue = Number.isFinite(pgdId) && Number(pgdId) > 0 ? pgdId : null;
+
     const result = await query(
-      `UPDATE projects SET name = $1, code = $2, description = $3, status = $4, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5 RETURNING *`,
-      [name, code.toUpperCase(), description || null, status || 'active', id]
+      `UPDATE projects SET name = $1, code = $2, description = $3, status = $4, program_director_id = $5, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $6 RETURNING *`,
+      [name, code.toUpperCase(), description || null, status || 'active', pgdValue, id]
     );
 
     if (result.rows.length === 0) {
